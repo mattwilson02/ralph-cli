@@ -10,10 +10,10 @@ function createFixture(base: string) {
 
   // Init a git repo so scanner doesn't crash
   const { execSync } = require("node:child_process");
-  execSync("git init && git commit --allow-empty -m init", {
-    cwd: root,
-    stdio: "ignore",
-  });
+  execSync(
+    'git init && git config user.email "test@test.com" && git config user.name "test" && git commit --allow-empty -m init',
+    { cwd: root, stdio: "ignore" },
+  );
 
   return {
     root,
