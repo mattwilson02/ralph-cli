@@ -1,18 +1,24 @@
+import { createRequire } from "node:module";
 import { Command } from "commander";
 import { init } from "./commands/init.js";
 import { run } from "./commands/run.js";
 import { spec } from "./commands/spec.js";
 
+const require = createRequire(import.meta.url);
+const pkg = require("../package.json");
+
 const program = new Command();
 
 program
   .name("ralph")
-  .description("Autonomous AI dev agent — builds, verifies, and ships.")
-  .version("0.1.0");
+  .description(
+    "Autonomous AI dev agent. Point it at a codebase and product spec — it builds, verifies, and ships.",
+  )
+  .version(pkg.version);
 
 program
   .command("init")
-  .description("Scan a project and display detected configuration")
+  .description("Scan project, detect stack, and save configuration to .ralph.yaml")
   .argument("[dir]", "project directory", ".")
   .option("--spec <path>", "set the product spec path (saved to .ralph.yaml)")
   .option("--base-branch <branch>", "set the base branch (saved to .ralph.yaml)")
@@ -22,7 +28,7 @@ program
 
 program
   .command("run")
-  .description("Start autonomous sprint execution")
+  .description("Start autonomous sprint execution against your codebase")
   .option("-d, --dir <path>", "project directory", ".")
   .option("-s, --sprint <n>", "starting sprint number")
   .option("--max-sprints <n>", "maximum sprints to run", "10")
@@ -35,15 +41,29 @@ program
   .option("--fix-model <model>", "model for fix agents")
   .option("--audit-model <model>", "model for auditor")
   .action(async (flags) => {
-    await run(flags);
+    try {
+      await run(flags);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\nRalph failed: ${message}`);
+      if (process.env.DEBUG) console.error(err);
+      process.exit(1);
+    }
   });
 
 program
   .command("spec")
-  .description("Generate a draft product spec from the codebase")
+  .description("Generate a product spec from your existing codebase")
   .argument("[dir]", "project directory", ".")
   .action(async (dir: string) => {
-    await spec(dir);
+    try {
+      await spec(dir);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\nRalph failed: ${message}`);
+      if (process.env.DEBUG) console.error(err);
+      process.exit(1);
+    }
   });
 
 program.parse();

@@ -85,8 +85,9 @@ export async function run(flags: RunFlags): Promise<void> {
     log("Ralph will analyze the codebase and fix quality issues.\n");
   }
 
-  // Detect greenfield projects
-  const greenfield = isGreenfield(ctx);
+  // Detect greenfield projects — but not if sprints already exist
+  const nextSprint = detectNextSprint(ctx.sprintsDir, root);
+  const greenfield = isGreenfield(ctx) && nextSprint === 1;
   if (greenfield) {
     log("Greenfield project detected — Ralph will scaffold before building.");
   }
@@ -95,7 +96,7 @@ export async function run(flags: RunFlags): Promise<void> {
   const savedState = loadState(root);
   const defaultSprint = savedState
     ? savedState.sprint
-    : detectNextSprint(ctx.sprintsDir, root);
+    : nextSprint;
 
   const opts: EngineOptions = {
     startSprint: parseInt(flags.sprint || String(defaultSprint), 10),
