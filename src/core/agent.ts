@@ -98,6 +98,8 @@ export async function runAgent(
   return "";
 }
 
+const AGENT_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes with no messages = hung
+
 async function runAgentOnce(
   prompt: string,
   opts: Record<string, unknown>,
@@ -108,26 +110,53 @@ async function runAgentOnce(
   let turns = 0;
   let cost = 0;
 
-  for await (const message of query({
-    prompt,
-    options: opts,
-  } as Parameters<typeof query>[0])) {
-    const msg = message as Record<string, unknown>;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
-    if (
-      msg.type === "system" &&
-      msg.subtype === "init" &&
-      typeof msg.session_id === "string"
-    ) {
-      sessionId = msg.session_id;
-    }
+  const idlePromise = new Promise<"timeout">((resolve) => {
+    const resetTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => resolve("timeout"), AGENT_IDLE_TIMEOUT_MS);
+    };
+    resetTimer();
+    // Expose resetTimer on the promise for use in the loop
+    (idlePromise as { resetTimer?: () => void }).resetTimer = resetTimer;
+  });
 
-    if (msg.type === "result") {
-      result = typeof msg.result === "string" ? msg.result : "";
-      subtype = typeof msg.subtype === "string" ? msg.subtype : "success";
-      turns = typeof msg.num_turns === "number" ? msg.num_turns : 0;
-      cost = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
+  const resetTimer = (idlePromise as { resetTimer?: () => void }).resetTimer!;
+
+  const streamPromise = (async () => {
+    for await (const message of query({
+      prompt,
+      options: opts,
+    } as Parameters<typeof query>[0])) {
+      resetTimer();
+      const msg = message as Record<string, unknown>;
+
+      if (
+        msg.type === "system" &&
+        msg.subtype === "init" &&
+        typeof msg.session_id === "string"
+      ) {
+        sessionId = msg.session_id;
+      }
+
+      if (msg.type === "result") {
+        result = typeof msg.result === "string" ? msg.result : "";
+        subtype = typeof msg.subtype === "string" ? msg.subtype : "success";
+        turns = typeof msg.num_turns === "number" ? msg.num_turns : 0;
+        cost = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
+      }
     }
+    return "done" as const;
+  })();
+
+  const winner = await Promise.race([streamPromise, idlePromise]);
+
+  if (idleTimer) clearTimeout(idleTimer);
+
+  if (winner === "timeout") {
+    log("  Agent idle for 5 minutes — treating as hung, moving on");
+    subtype = "error_timeout";
   }
 
   return { result, subtype, turns, cost, sessionId };
