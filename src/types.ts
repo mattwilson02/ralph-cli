@@ -24,6 +24,7 @@ export interface EngineOptions {
   greenfield: boolean;
   maxFixAttempts: number;
   maxResumeAttempts: number;
+  sprintTimeout: number;
   models: ModelConfig;
 }
 

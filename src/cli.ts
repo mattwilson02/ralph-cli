@@ -37,6 +37,7 @@ program
   .option("-t, --task <description>", "directed task — skip spec writer, build inline spec from description")
   .option("--spec <path>", "path to product spec file")
   .option("--max-fix-attempts <n>", "max fix attempts per verify cycle", "3")
+  .option("--sprint-timeout <minutes>", "max time per sprint in minutes", "45")
   .option("--spec-model <model>", "model for spec writer")
   .option("--build-model <model>", "model for builder agents")
   .option("--fix-model <model>", "model for fix agents")

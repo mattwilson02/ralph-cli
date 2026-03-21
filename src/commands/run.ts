@@ -46,6 +46,7 @@ interface RunFlags {
   spec?: string;
   task?: string;
   maxFixAttempts?: string;
+  sprintTimeout?: string;
   specModel?: string;
   buildModel?: string;
   fixModel?: string;
@@ -112,6 +113,7 @@ export async function run(flags: RunFlags): Promise<void> {
     greenfield,
     maxFixAttempts: parseInt(flags.maxFixAttempts || "3", 10),
     maxResumeAttempts: 3,
+    sprintTimeout: parseInt(flags.sprintTimeout || "45", 10),
     models: {
       specWriter: flags.specModel || DEFAULT_MODELS.specWriter,
       builder: flags.buildModel || DEFAULT_MODELS.builder,

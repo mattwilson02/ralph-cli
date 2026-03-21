@@ -81,7 +81,7 @@ export async function verifyAndFix(
         "Glob",
         "Grep",
       ],
-      maxTurns: 100,
+      maxTurns: 30,
       systemPromptAppend:
         "You are a fix agent. Fix the verification failures. Do NOT introduce new features. Do NOT delete or skip failing tests.",
     });

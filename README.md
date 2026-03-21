@@ -232,6 +232,7 @@ Start autonomous sprint execution. Adapts behavior based on project state.
 | `-t, --task <desc>` | - | Directed task (skips spec writer, builds from description) |
 | `--spec <path>` | auto-detected | Path to product spec |
 | `--max-fix-attempts <n>` | `3` | Max fix attempts per verify cycle |
+| `--sprint-timeout <min>` | `45` | Max time per sprint in minutes |
 | `--spec-model <model>` | `claude-opus-4-6` | Model for spec writer |
 | `--build-model <model>` | `claude-sonnet-4-6` | Model for builders |
 | `--fix-model <model>` | `claude-sonnet-4-6` | Model for fix agents |

@@ -27,6 +27,8 @@ export async function runEngine(
   log(`  Max sprints: ${opts.maxSprints}`);
   if (opts.task) log(`  Task: ${opts.task}`);
   if (opts.greenfield) log(`  Mode: greenfield`);
+  if (opts.improve) log(`  Mode: improve`);
+  log(`  Sprint timeout: ${opts.sprintTimeout} min`);
   log("═".repeat(60));
 
   const endSprint = opts.startSprint + opts.maxSprints;
@@ -71,6 +73,9 @@ export async function runEngine(
       log(`  Branched from: ${parentBranch}`);
     }
 
+    const timeoutMs = opts.sprintTimeout * 60 * 1000;
+    const isTimedOut = () => Date.now() - startTime > timeoutMs;
+
     try {
       // ── Phase: Spec ──
       if (shouldRun(startPhase, "spec")) {
@@ -111,7 +116,7 @@ export async function runEngine(
       }
 
       // ── Phase: Build Verify (with fix loop) ──
-      if (shouldRun(startPhase, "build_verify")) {
+      if (shouldRun(startPhase, "build_verify") && !isTimedOut()) {
         const hasBackend = ctx.workspaces.some(
           (w) => w.type === "backend" || w.type === "shared",
         );
@@ -140,7 +145,7 @@ export async function runEngine(
       }
 
       // ── Phase: Full Verify ──
-      if (shouldRun(startPhase, "full_verify")) {
+      if (shouldRun(startPhase, "full_verify") && !isTimedOut()) {
         const passed = await verifyAndFix(
           ctx,
           "full",
@@ -163,7 +168,7 @@ export async function runEngine(
       }
 
       // ── Phase: Audit ──
-      if (shouldRun(startPhase, "audit")) {
+      if (shouldRun(startPhase, "audit") && !isTimedOut()) {
         const audit = await auditSpec(ctx, specPath, opts.models.auditor);
 
         if (audit.missing.length > 0) {
@@ -186,6 +191,11 @@ export async function runEngine(
           specPath,
           branchName,
         });
+      }
+
+      if (isTimedOut()) {
+        const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+        log(`\nSprint timeout after ${elapsed} min — shipping with current state`);
       }
 
       // ── Phase: PR ──
