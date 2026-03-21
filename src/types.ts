@@ -18,6 +18,7 @@ export interface EngineOptions {
   startSprint: number;
   maxSprints: number;
   singleMode: boolean;
+  improve: boolean;
   specPath?: string;
   task?: string;
   greenfield: boolean;

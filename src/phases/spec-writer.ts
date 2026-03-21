@@ -13,6 +13,7 @@ import { log } from "../util/logger.js";
 interface WriteSpecOptions {
   task?: string;
   greenfield?: boolean;
+  improve?: boolean;
 }
 
 export async function writeSpec(
@@ -41,7 +42,7 @@ export async function writeSpec(
   }
 
   const hasProductSpec = ctx.productSpec && existsSync(ctx.productSpec);
-  const mode = options.task ? "task" : hasProductSpec ? "spec" : "improvement";
+  const mode = options.task ? "task" : options.improve ? "improvement" : hasProductSpec ? "spec" : "improvement";
 
   log(
     `Writing spec for sprint ${sprintNumber}${mode === "task" ? ` (task: ${options.task})` : mode === "improvement" ? " (improvement mode — no product spec)" : ""}...`,

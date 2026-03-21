@@ -1,5 +1,5 @@
 import type { ProjectContext } from "../context/types.js";
-import type { EngineOptions, SprintState } from "../types.js";
+import type { EngineOptions } from "../types.js";
 import { loadState, saveState, clearState } from "./state.js";
 import { writeSpec } from "../phases/spec-writer.js";
 import { runBuilders } from "../phases/builder.js";
@@ -77,6 +77,7 @@ export async function runEngine(
         const spec = await writeSpec(ctx, sprint, opts.models.specWriter, {
           task: opts.task,
           greenfield: opts.greenfield,
+          improve: opts.improve,
         });
         specName = spec.name;
         specPath = spec.path;

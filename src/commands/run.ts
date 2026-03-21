@@ -42,6 +42,7 @@ interface RunFlags {
   sprint?: string;
   maxSprints?: string;
   single?: boolean;
+  improve?: boolean;
   spec?: string;
   task?: string;
   maxFixAttempts?: string;
@@ -80,9 +81,13 @@ export async function run(flags: RunFlags): Promise<void> {
     ctx.git.baseBranch = config.baseBranch;
   }
 
-  if (!ctx.productSpec && !flags.task) {
-    log("No product spec found — running in improvement mode.");
-    log("Ralph will analyze the codebase and fix quality issues.\n");
+  if (!ctx.productSpec && !flags.task && !flags.improve) {
+    log("No product spec found.");
+    log("Ralph is spec-driven — he needs a product spec to plan sprints.\n");
+    log("  Generate one:  ralph spec");
+    log("  Point to one:  ralph init --spec path/to/PRODUCT_SPEC.md");
+    log("  Or run:        ralph run --improve  (specless codebase improvements)\n");
+    process.exit(1);
   }
 
   // Detect greenfield projects — but not if sprints already exist
@@ -102,6 +107,7 @@ export async function run(flags: RunFlags): Promise<void> {
     startSprint: parseInt(flags.sprint || String(defaultSprint), 10),
     maxSprints: parseInt(flags.maxSprints || "10", 10),
     singleMode: flags.task ? true : (flags.single ?? false),
+    improve: flags.improve ?? false,
     task: flags.task,
     greenfield,
     maxFixAttempts: parseInt(flags.maxFixAttempts || "3", 10),

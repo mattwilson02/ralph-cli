@@ -93,12 +93,12 @@ ralph run --task "increase test coverage for the auth module"
 ralph run --task "add pagination to the users API"
 ```
 
-### Improvement Mode
+### Improve Mode
 
-No product spec? Ralph analyzes the codebase and finds the most impactful quality improvements — broken tests, missing error handling, security gaps, dead code.
+No product spec? Run Ralph in improve mode — he analyzes the codebase and finds the most impactful quality improvements: broken tests, missing error handling, security gaps, dead code.
 
 ```bash
-ralph run --single   # auto-detects no spec, enters improvement mode
+ralph run --improve --single   # analyze and fix quality issues
 ```
 
 ### Draft Spec Generation
@@ -228,6 +228,7 @@ Start autonomous sprint execution. Adapts behavior based on project state.
 | `-s, --sprint <n>` | `1` | Starting sprint number |
 | `--max-sprints <n>` | `10` | Maximum sprints to run |
 | `--single` | `false` | Run one sprint then stop |
+| `--improve` | `false` | Specless mode — analyze and fix quality issues |
 | `-t, --task <desc>` | - | Directed task (skips spec writer, builds from description) |
 | `--spec <path>` | auto-detected | Path to product spec |
 | `--max-fix-attempts <n>` | `3` | Max fix attempts per verify cycle |

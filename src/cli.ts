@@ -33,6 +33,7 @@ program
   .option("-s, --sprint <n>", "starting sprint number")
   .option("--max-sprints <n>", "maximum sprints to run", "10")
   .option("--single", "run a single sprint then stop")
+  .option("--improve", "specless mode — analyze codebase and fix quality issues")
   .option("-t, --task <description>", "directed task — skip spec writer, build inline spec from description")
   .option("--spec <path>", "path to product spec file")
   .option("--max-fix-attempts <n>", "max fix attempts per verify cycle", "3")
