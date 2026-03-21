@@ -24,7 +24,7 @@ program
   .command("run")
   .description("Start autonomous sprint execution")
   .option("-d, --dir <path>", "project directory", ".")
-  .option("-s, --sprint <n>", "starting sprint number", "1")
+  .option("-s, --sprint <n>", "starting sprint number")
   .option("--max-sprints <n>", "maximum sprints to run", "10")
   .option("--single", "run a single sprint then stop")
   .option("-t, --task <description>", "directed task — skip spec writer, build inline spec from description")
