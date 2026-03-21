@@ -48,7 +48,7 @@ Then it moves on to the next sprint.
 ### Install
 
 ```bash
-npm install -g @ralph/cli
+npm install -g ralph-agent
 ```
 
 ### Usage
