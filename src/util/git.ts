@@ -27,6 +27,11 @@ export function detectRemoteUrl(root: string): string | undefined {
 }
 
 export function createBranch(root: string, name: string): void {
+  const branches = listBranches(root);
+  if (branches.includes(name)) {
+    log(`  Branch ${name} already exists — deleting and recreating`);
+    run(`git branch -D ${name}`, root);
+  }
   run(`git checkout -b ${name}`, root);
 }
 
