@@ -1,11 +1,41 @@
 import { resolve, join } from "node:path";
+import { readdirSync } from "node:fs";
 import { scanProject } from "../context/scanner.js";
 import { runEngine } from "../core/engine.js";
 import { loadConfig } from "../config.js";
 import { loadState } from "../core/state.js";
+import { listBranches } from "../util/git.js";
 import { log } from "../util/logger.js";
 import { DEFAULT_MODELS } from "../types.js";
 import type { EngineOptions } from "../types.js";
+
+function detectNextSprint(sprintsDir: string, root: string): number {
+  let maxSprint = 0;
+
+  // Check existing spec files (sprint-N-*.md)
+  try {
+    const files = readdirSync(sprintsDir);
+    for (const f of files) {
+      const match = f.match(/^sprint-(\d+)-/);
+      if (match) {
+        maxSprint = Math.max(maxSprint, parseInt(match[1], 10));
+      }
+    }
+  } catch {
+    // No sprints dir yet
+  }
+
+  // Check existing branches (sprint/sprint-N-*)
+  const branches = listBranches(root);
+  for (const b of branches) {
+    const match = b.match(/^sprint\/sprint-(\d+)-/);
+    if (match) {
+      maxSprint = Math.max(maxSprint, parseInt(match[1], 10));
+    }
+  }
+
+  return maxSprint + 1;
+}
 
 interface RunFlags {
   dir?: string;
@@ -61,9 +91,11 @@ export async function run(flags: RunFlags): Promise<void> {
     log("Greenfield project detected — Ralph will scaffold before building.");
   }
 
-  // Resume from saved state if no explicit --sprint flag
+  // Resume from saved state, or detect next sprint from existing specs/branches
   const savedState = loadState(root);
-  const defaultSprint = savedState ? savedState.sprint : 1;
+  const defaultSprint = savedState
+    ? savedState.sprint
+    : detectNextSprint(ctx.sprintsDir, root);
 
   const opts: EngineOptions = {
     startSprint: parseInt(flags.sprint || String(defaultSprint), 10),
