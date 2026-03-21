@@ -138,7 +138,7 @@ async function runAgentStream(
   let gotFirstMessage = false;
 
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  let resetTimer: () => void;
+  let resetTimer: () => void = () => {};
 
   const idlePromise = new Promise<"timeout">((resolve) => {
     resetTimer = () => {
