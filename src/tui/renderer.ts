@@ -104,8 +104,46 @@ export class TUIRenderer {
     }
   }
 
+  private detectSprintFromLog(): { sprint: number; phase: string } | null {
+    try {
+      const content = readFileSync(this.logPath, "utf-8");
+      const lines = content.split("\n").reverse();
+      let sprint: number | null = null;
+      let phase = "spec";
+
+      for (const line of lines) {
+        if (!sprint) {
+          const sprintMatch = line.match(/SPRINT\s+(\d+)/);
+          if (sprintMatch) sprint = parseInt(sprintMatch[1], 10);
+        }
+        if (line.includes("Writing spec")) phase = "spec";
+        if (line.includes("builder")) phase = "build";
+        if (line.includes("verification checks (build)")) phase = "build_verify";
+        if (line.includes("verification checks (full)")) phase = "full_verify";
+        if (line.includes("compliance audit")) phase = "audit";
+        if (line.includes("Committing")) phase = "pr";
+        if (sprint) break;
+      }
+
+      return sprint ? { sprint, phase } : null;
+    } catch {
+      return null;
+    }
+  }
+
   private printStateHeader(): void {
     if (!this.state) {
+      // Try to detect from log output
+      const logState = this.detectSprintFromLog();
+      if (logState) {
+        console.log(
+          chalk.bold.white(`  Sprint ${logState.sprint}`) +
+          chalk.gray(" · ") +
+          chalk.bold.magenta(PHASE_LABELS[logState.phase] || logState.phase),
+        );
+        console.log(chalk.yellow("─".repeat(process.stdout.columns || 80)));
+        return;
+      }
       console.log(chalk.gray("  Waiting for Ralph to start...\n"));
       return;
     }
@@ -212,12 +250,18 @@ export class TUIRenderer {
     }
   }
 
+  private printQuote(): void {
+    const quote = RALPH_QUOTES[Math.floor(Math.random() * RALPH_QUOTES.length)];
+    console.log(chalk.italic.gray(`  "${quote}"\n`));
+  }
+
   private watchState(): void {
     const onStateChange = () => {
       this.loadState();
       if (this.state && this.state.phase !== this.lastPhase) {
         this.lastPhase = this.state.phase;
         console.log(chalk.yellow("\n─".repeat(process.stdout.columns || 80)));
+        this.printQuote();
         this.printStateHeader();
       }
     };

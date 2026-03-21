@@ -1,6 +1,6 @@
 {
   "name": "ralph-agent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Autonomous AI dev agent. Point it at your codebase and product spec — it builds, verifies, and ships.",
   "type": "module",
   "bin": {
@@ -28,7 +28,8 @@
     "vitest": "^4.1.0"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs/ralph.png"
   ],
   "keywords": [
     "ai",
