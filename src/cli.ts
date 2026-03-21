@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { init } from "./commands/init.js";
 import { run } from "./commands/run.js";
 import { spec } from "./commands/spec.js";
+import { watchCommand } from "./commands/watch.js";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json");
@@ -60,6 +61,21 @@ program
   .action(async (dir: string) => {
     try {
       await spec(dir);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\nRalph failed: ${message}`);
+      if (process.env.DEBUG) console.error(err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("watch")
+  .description("Live TUI — watch Ralph work with animated ASCII art and pretty logs")
+  .argument("[dir]", "project directory", ".")
+  .action(async (dir: string) => {
+    try {
+      await watchCommand(dir);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`\nRalph failed: ${message}`);

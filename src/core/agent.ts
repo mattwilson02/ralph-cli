@@ -99,8 +99,34 @@ export async function runAgent(
 }
 
 const AGENT_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes with no messages = hung
+const AGENT_INIT_TIMEOUT_MS = 30 * 1000; // 30 seconds to get first message
+const AGENT_CONNECT_RETRIES = 2;
 
 async function runAgentOnce(
+  prompt: string,
+  opts: Record<string, unknown>,
+): Promise<AgentResult> {
+  // Retry connection failures (0 turns = never started)
+  for (let connAttempt = 0; connAttempt <= AGENT_CONNECT_RETRIES; connAttempt++) {
+    if (connAttempt > 0) {
+      log(`  Retrying agent connection (attempt ${connAttempt + 1}/${AGENT_CONNECT_RETRIES + 1})...`);
+    }
+
+    const result = await runAgentStream(prompt, opts);
+
+    // If we got 0 turns and timed out, the connection failed — retry
+    if (result.subtype === "error_timeout" && result.turns === 0 && connAttempt < AGENT_CONNECT_RETRIES) {
+      log("  Agent failed to connect (0 turns) — retrying...");
+      continue;
+    }
+
+    return result;
+  }
+
+  return { result: "", subtype: "error_timeout", turns: 0, cost: 0 };
+}
+
+async function runAgentStream(
   prompt: string,
   opts: Record<string, unknown>,
 ): Promise<AgentResult> {
@@ -109,26 +135,27 @@ async function runAgentOnce(
   let subtype = "success";
   let turns = 0;
   let cost = 0;
+  let gotFirstMessage = false;
 
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let resetTimer: () => void;
 
   const idlePromise = new Promise<"timeout">((resolve) => {
-    const resetTimer = () => {
+    resetTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => resolve("timeout"), AGENT_IDLE_TIMEOUT_MS);
+      // Use shorter timeout if we haven't received any messages yet
+      const timeout = gotFirstMessage ? AGENT_IDLE_TIMEOUT_MS : AGENT_INIT_TIMEOUT_MS;
+      idleTimer = setTimeout(() => resolve("timeout"), timeout);
     };
     resetTimer();
-    // Expose resetTimer on the promise for use in the loop
-    (idlePromise as { resetTimer?: () => void }).resetTimer = resetTimer;
   });
-
-  const resetTimer = (idlePromise as { resetTimer?: () => void }).resetTimer!;
 
   const streamPromise = (async () => {
     for await (const message of query({
       prompt,
       options: opts,
     } as Parameters<typeof query>[0])) {
+      gotFirstMessage = true;
       resetTimer();
       const msg = message as Record<string, unknown>;
 
@@ -155,7 +182,11 @@ async function runAgentOnce(
   if (idleTimer) clearTimeout(idleTimer);
 
   if (winner === "timeout") {
-    log("  Agent idle for 5 minutes — treating as hung, moving on");
+    if (!gotFirstMessage) {
+      log("  Agent failed to connect (no response in 30s)");
+    } else {
+      log("  Agent idle for 5 minutes — treating as hung, moving on");
+    }
     subtype = "error_timeout";
   }
 

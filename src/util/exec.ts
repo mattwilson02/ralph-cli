@@ -1,10 +1,13 @@
 import { execSync } from "node:child_process";
 import { log } from "./logger.js";
 
+const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes per command
+
 export function run(
   cmd: string,
   cwd: string,
   env?: Record<string, string>,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): string {
   log(`  $ ${cmd}`);
   return execSync(cmd, {
@@ -13,6 +16,7 @@ export function run(
     stdio: ["pipe", "pipe", "pipe"],
     env: env ? { ...process.env, ...env } : process.env,
     maxBuffer: 50 * 1024 * 1024,
+    timeout: timeoutMs,
   }).trim();
 }
 

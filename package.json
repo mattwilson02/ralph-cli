@@ -1,6 +1,6 @@
 {
   "name": "ralph-agent",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Autonomous AI dev agent. Point it at your codebase and product spec — it builds, verifies, and ships.",
   "type": "module",
   "bin": {
@@ -16,7 +16,9 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.3",
-    "commander": "^13.1.0"
+    "chalk": "^5.6.2",
+    "commander": "^13.1.0",
+    "terminal-image": "^4.2.0"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

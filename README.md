@@ -66,6 +66,9 @@ ralph run --task "add rate limiting to all API endpoints"
 # Run 3 sprints starting from sprint 5
 ralph run --sprint 5 --max-sprints 3
 
+# Watch Ralph work — live TUI with pretty logs
+ralph watch
+
 # Run against a different directory
 ralph run --dir ~/projects/my-app
 ```
@@ -238,6 +241,20 @@ Start autonomous sprint execution. Adapts behavior based on project state.
 | `--fix-model <model>` | `claude-sonnet-4-6` | Model for fix agents |
 | `--audit-model <model>` | `claude-opus-4-6` | Model for auditor |
 
+### `ralph watch [dir]`
+
+Live TUI to watch Ralph work. Shows Ralph Wiggum, phase progress, and color-coded logs in real-time.
+
+```bash
+# In one terminal:
+ralph run --single
+
+# In another:
+ralph watch
+```
+
+Reads from `ralph.log` and `.ralph-state.json` — no config needed. Press `Ctrl+C` to exit.
+
 ### `ralph spec [dir]`
 
 Generate a draft `PRODUCT_SPEC.md` from the codebase. Uses Opus to analyze the project and write a starting point for you to edit.
@@ -258,7 +275,7 @@ Ralph looks for your product spec in this order:
 6. `docs/product-spec.md`
 7. `VISION.md`
 
-No spec? Ralph runs in **improvement mode** automatically.
+No spec? Use `ralph run --improve` for specless codebase improvements.
 
 ### `.ralph.yaml`
 

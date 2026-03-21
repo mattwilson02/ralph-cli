@@ -14,12 +14,13 @@ import {
   listBranches,
   isBranchMergedInto,
 } from "../util/git.js";
-import { log } from "../util/logger.js";
+import { log, initLogger } from "../util/logger.js";
 
 export async function runEngine(
   ctx: ProjectContext,
   opts: EngineOptions,
 ): Promise<void> {
+  initLogger(ctx.root);
   log("═".repeat(60));
   log(`  Ralph — ${ctx.name}`);
   log(`  Base branch: ${ctx.git.baseBranch}`);
