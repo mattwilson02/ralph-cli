@@ -2,6 +2,7 @@ import { resolve, join } from "node:path";
 import { scanProject } from "../context/scanner.js";
 import { runEngine } from "../core/engine.js";
 import { loadConfig } from "../config.js";
+import { loadState } from "../core/state.js";
 import { log } from "../util/logger.js";
 import { DEFAULT_MODELS } from "../types.js";
 import type { EngineOptions } from "../types.js";
@@ -60,8 +61,12 @@ export async function run(flags: RunFlags): Promise<void> {
     log("Greenfield project detected — Ralph will scaffold before building.");
   }
 
+  // Resume from saved state if no explicit --sprint flag
+  const savedState = loadState(root);
+  const defaultSprint = savedState ? savedState.sprint : 1;
+
   const opts: EngineOptions = {
-    startSprint: parseInt(flags.sprint || "1", 10),
+    startSprint: parseInt(flags.sprint || String(defaultSprint), 10),
     maxSprints: parseInt(flags.maxSprints || "10", 10),
     singleMode: flags.task ? true : (flags.single ?? false),
     task: flags.task,
