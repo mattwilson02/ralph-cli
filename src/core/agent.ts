@@ -26,6 +26,35 @@ export async function runAgent(
   opts: AgentOptions,
   maxResumeAttempts: number = 3,
 ): Promise<string> {
+  // The Agent SDK throws uncaught EPIPE errors when its subprocess closes.
+  // These kill the Node process by default. Swallow EPIPE specifically,
+  // log anything else.
+  const onUncaught = (err: Error & { code?: string }) => {
+    if (err.code === "EPIPE" || err.message?.includes("EPIPE")) {
+      // Expected when agent subprocess closes — ignore
+      return;
+    }
+    log(`  Uncaught exception after agent: ${err.message}`);
+  };
+  const onUnhandled = (reason: unknown) => {
+    log(`  Unhandled rejection after agent: ${reason}`);
+  };
+  process.on("uncaughtException", onUncaught);
+  process.on("unhandledRejection", onUnhandled);
+
+  try {
+    return await runAgentInner(prompt, opts, maxResumeAttempts);
+  } finally {
+    process.removeListener("uncaughtException", onUncaught);
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+}
+
+async function runAgentInner(
+  prompt: string,
+  opts: AgentOptions,
+  maxResumeAttempts: number = 3,
+): Promise<string> {
   const queryOpts = {
     model: opts.model,
     allowedTools: opts.allowedTools,
@@ -143,16 +172,6 @@ async function runAgentStreamInner(
   prompt: string,
   opts: Record<string, unknown>,
 ): Promise<AgentResult> {
-  // The Agent SDK calls process.exit() after the agent completes,
-  // which kills the entire Ralph process between phases.
-  // Intercept exit calls during agent execution and restore after.
-  const originalExit = process.exit;
-  let exitIntercepted = false;
-  process.exit = ((code?: number) => {
-    exitIntercepted = true;
-    log(`  Intercepted process.exit(${code}) from Agent SDK — continuing`);
-  }) as never;
-
   let sessionId: string | undefined;
   let result = "";
   let subtype = "success";
@@ -200,22 +219,18 @@ async function runAgentStreamInner(
     return "done" as const;
   })();
 
-  try {
-    const winner = await Promise.race([streamPromise, idlePromise]);
+  const winner = await Promise.race([streamPromise, idlePromise]);
 
-    if (idleTimer) clearTimeout(idleTimer);
+  if (idleTimer) clearTimeout(idleTimer);
 
-    if (winner === "timeout") {
-      if (!gotFirstMessage) {
-        log("  Agent failed to connect (no response in 30s)");
-      } else {
-        log("  Agent idle for 5 minutes — treating as hung, moving on");
-      }
-      subtype = "error_timeout";
+  if (winner === "timeout") {
+    if (!gotFirstMessage) {
+      log("  Agent failed to connect (no response in 30s)");
+    } else {
+      log("  Agent idle for 5 minutes — treating as hung, moving on");
     }
-
-    return { result, subtype, turns, cost, sessionId };
-  } finally {
-    process.exit = originalExit;
+    subtype = "error_timeout";
   }
+
+  return { result, subtype, turns, cost, sessionId };
 }

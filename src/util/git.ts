@@ -43,8 +43,13 @@ export function renameBranch(root: string, newName: string): void {
 }
 
 export function ensureGitignore(root: string): void {
+  const { readFileSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
   const gitignorePath = `${root}/.gitignore`;
   const { ok } = runSafe(`test -f ${gitignorePath}`, root);
+
+  // Ralph's own working files — must never be committed
+  const ralphFiles = ["ralph.log", ".ralph-state.json"];
+
   if (!ok) {
     const defaults = [
       "node_modules/",
@@ -60,10 +65,18 @@ export function ensureGitignore(root: string): void {
       "venv/",
       "coverage/",
       ".nyc_output/",
+      ...ralphFiles,
     ];
-    const { writeFileSync } = require("node:fs") as typeof import("node:fs");
     writeFileSync(gitignorePath, defaults.join("\n") + "\n");
     log("  Created .gitignore with sensible defaults");
+  } else {
+    // Existing .gitignore — ensure Ralph's files are excluded
+    const content = readFileSync(gitignorePath, "utf-8");
+    const missing = ralphFiles.filter((f) => !content.includes(f));
+    if (missing.length > 0) {
+      writeFileSync(gitignorePath, content.trimEnd() + "\n\n# Ralph working files\n" + missing.join("\n") + "\n");
+      log("  Added Ralph working files to .gitignore");
+    }
   }
 }
 
