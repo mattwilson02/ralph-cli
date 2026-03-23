@@ -266,16 +266,37 @@ export class TUIRenderer {
       }
     };
 
-    try {
-      this.stateWatcher = watch(this.statePath, onStateChange);
-    } catch {
+    const startWatching = () => {
+      if (this.stateWatcher) {
+        try { this.stateWatcher.close(); } catch { /* already closed */ }
+      }
+      this.stateWatcher = watch(this.statePath, (event) => {
+        if (event === "rename" && !existsSync(this.statePath)) {
+          // State file was deleted (sprint completed) — poll until it reappears
+          this.stateWatcher?.close();
+          pollUntilExists();
+          return;
+        }
+        onStateChange();
+      });
+    };
+
+    const pollUntilExists = () => {
       const poll = setInterval(() => {
-        try {
-          this.stateWatcher = watch(this.statePath, onStateChange);
+        if (existsSync(this.statePath)) {
           clearInterval(poll);
-          onStateChange();
-        } catch { /* waiting */ }
-      }, 2000);
+          try {
+            startWatching();
+            onStateChange();
+          } catch { /* will retry */ }
+        }
+      }, 500);
+    };
+
+    try {
+      startWatching();
+    } catch {
+      pollUntilExists();
     }
   }
 

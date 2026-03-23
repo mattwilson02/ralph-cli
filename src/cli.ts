@@ -8,6 +8,39 @@ import { watchCommand } from "./commands/watch.js";
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json");
 
+// Ensure all child processes are killed when Ralph exits.
+// Without this, spawned Claude agents can become orphaned (PPID=1)
+// and burn CPU/tokens indefinitely if the parent terminal closes.
+function killAllChildren() {
+  try {
+    // Kill our entire process group
+    process.kill(-process.pid, "SIGTERM");
+  } catch {
+    // process group kill may fail — not critical
+  }
+}
+
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => {
+    killAllChildren();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
+}
+
+process.on("exit", killAllChildren);
+
+// Detect orphaned process — if parent dies (PPID becomes 1), exit
+const parentPid = process.ppid;
+if (parentPid !== undefined) {
+  const orphanCheck = setInterval(() => {
+    if (process.ppid !== parentPid) {
+      killAllChildren();
+      process.exit(1);
+    }
+  }, 5000);
+  orphanCheck.unref();
+}
+
 const program = new Command();
 
 program
