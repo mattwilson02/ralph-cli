@@ -1,3 +1,4 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import { run, runSafe } from "./exec.js";
 import { log } from "./logger.js";
 
@@ -43,7 +44,6 @@ export function renameBranch(root: string, newName: string): void {
 }
 
 export function ensureGitignore(root: string): void {
-  const { readFileSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
   const gitignorePath = `${root}/.gitignore`;
   const { ok } = runSafe(`test -f ${gitignorePath}`, root);
 
