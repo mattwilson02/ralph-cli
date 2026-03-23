@@ -130,6 +130,29 @@ async function runAgentStream(
   prompt: string,
   opts: Record<string, unknown>,
 ): Promise<AgentResult> {
+  try {
+    return await runAgentStreamInner(prompt, opts);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`  Agent crashed: ${msg}`);
+    return { result: "", subtype: "error_crash", turns: 0, cost: 0 };
+  }
+}
+
+async function runAgentStreamInner(
+  prompt: string,
+  opts: Record<string, unknown>,
+): Promise<AgentResult> {
+  // The Agent SDK calls process.exit() after the agent completes,
+  // which kills the entire Ralph process between phases.
+  // Intercept exit calls during agent execution and restore after.
+  const originalExit = process.exit;
+  let exitIntercepted = false;
+  process.exit = ((code?: number) => {
+    exitIntercepted = true;
+    log(`  Intercepted process.exit(${code}) from Agent SDK — continuing`);
+  }) as never;
+
   let sessionId: string | undefined;
   let result = "";
   let subtype = "success";
@@ -177,18 +200,22 @@ async function runAgentStream(
     return "done" as const;
   })();
 
-  const winner = await Promise.race([streamPromise, idlePromise]);
+  try {
+    const winner = await Promise.race([streamPromise, idlePromise]);
 
-  if (idleTimer) clearTimeout(idleTimer);
+    if (idleTimer) clearTimeout(idleTimer);
 
-  if (winner === "timeout") {
-    if (!gotFirstMessage) {
-      log("  Agent failed to connect (no response in 30s)");
-    } else {
-      log("  Agent idle for 5 minutes — treating as hung, moving on");
+    if (winner === "timeout") {
+      if (!gotFirstMessage) {
+        log("  Agent failed to connect (no response in 30s)");
+      } else {
+        log("  Agent idle for 5 minutes — treating as hung, moving on");
+      }
+      subtype = "error_timeout";
     }
-    subtype = "error_timeout";
-  }
 
-  return { result, subtype, turns, cost, sessionId };
+    return { result, subtype, turns, cost, sessionId };
+  } finally {
+    process.exit = originalExit;
+  }
 }

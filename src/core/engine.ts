@@ -20,6 +20,22 @@ export async function runEngine(
   ctx: ProjectContext,
   opts: EngineOptions,
 ): Promise<void> {
+  // Keep the event loop alive between agent runs.
+  // The Agent SDK may tear down all handles when an agent completes,
+  // causing Node to exit before the next phase starts.
+  const keepalive = setInterval(() => {}, 30_000);
+
+  try {
+    await runEngineInner(ctx, opts);
+  } finally {
+    clearInterval(keepalive);
+  }
+}
+
+async function runEngineInner(
+  ctx: ProjectContext,
+  opts: EngineOptions,
+): Promise<void> {
   initLogger(ctx.root);
   log("═".repeat(60));
   log(`  Ralph — ${ctx.name}`);
@@ -105,6 +121,7 @@ export async function runEngine(
 
       // ── Phase: Build ──
       if (shouldRun(startPhase, "build")) {
+        log(`Entering build phase (specPath: ${specPath})`);
         await runBuilders(ctx, specPath, opts.models.builder);
 
         saveState(ctx.root, {

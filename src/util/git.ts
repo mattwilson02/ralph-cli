@@ -42,7 +42,33 @@ export function renameBranch(root: string, newName: string): void {
   }
 }
 
+export function ensureGitignore(root: string): void {
+  const gitignorePath = `${root}/.gitignore`;
+  const { ok } = runSafe(`test -f ${gitignorePath}`, root);
+  if (!ok) {
+    const defaults = [
+      "node_modules/",
+      "dist/",
+      "build/",
+      ".env",
+      ".env.*",
+      "*.log",
+      ".DS_Store",
+      "__pycache__/",
+      "*.pyc",
+      ".venv/",
+      "venv/",
+      "coverage/",
+      ".nyc_output/",
+    ];
+    const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+    writeFileSync(gitignorePath, defaults.join("\n") + "\n");
+    log("  Created .gitignore with sensible defaults");
+  }
+}
+
 export function commitAll(root: string, message: string): void {
+  ensureGitignore(root);
   run("git add -A", root);
   const { ok } = runSafe("git diff --cached --quiet", root);
   if (ok) {
