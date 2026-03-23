@@ -13,6 +13,7 @@ import {
   pullLatest,
   listBranches,
   isBranchMergedInto,
+  ensureGitignore,
 } from "../util/git.js";
 import { log, initLogger } from "../util/logger.js";
 
@@ -72,6 +73,7 @@ export async function runEngine(
       }
       createBranch(ctx.root, `sprint/${sprint}`);
       log(`  Branched from: ${parentBranch}`);
+      ensureGitignore(ctx.root);
     }
 
     const timeoutMs = opts.sprintTimeout * 60 * 1000;
