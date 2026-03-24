@@ -4,7 +4,7 @@ import { join } from "node:path";
 let logStream: WriteStream | null = null;
 
 export function initLogger(root: string): void {
-  logStream = createWriteStream(join(root, "ralph.log"), { flags: "a" });
+  logStream = createWriteStream(join(root, "ralph.log"), { flags: "w" });
 }
 
 export function log(msg: string): void {
