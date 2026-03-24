@@ -36,8 +36,15 @@ export interface StackInfo {
   buildTool?: string;
 }
 
+export type GitProvider = "github" | "gitea" | "unknown";
+
 export interface GitInfo {
   baseBranch: string;
   remote: string;
   repoUrl?: string;
+  provider: GitProvider;
+  /** Gitea API base URL (e.g., "https://git.citadelsigma.com/api/v1"). Only set when provider is "gitea". */
+  giteaApiUrl?: string;
+  /** Gitea repo owner/name (e.g., "matt/imperium-v2"). Only set when provider is "gitea". */
+  giteaRepo?: string;
 }

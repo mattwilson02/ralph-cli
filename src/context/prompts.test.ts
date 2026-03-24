@@ -45,6 +45,7 @@ function makeCtx(overrides: Partial<ProjectContext> = {}): ProjectContext {
     git: {
       baseBranch: "main",
       remote: "origin",
+      provider: "github",
     },
     productSpec: "",
     sprintsDir: "/tmp/test-project/docs/sprints",

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { detectBaseBranch, detectRemoteUrl } from "../util/git.js";
+import { detectBaseBranch, detectRemoteUrl, detectGitProvider, parseGiteaRemote } from "../util/git.js";
 import type {
   ProjectContext,
   Workspace,
@@ -985,10 +985,17 @@ export function scanProject(root: string): ProjectContext {
   const rootPyDeps = parsePythonDeps(root);
   allPythonDeps.push(...rootPyDeps);
 
+  const repoUrl = detectRemoteUrl(root);
+  const provider = detectGitProvider(repoUrl);
+  const giteaInfo = provider === "gitea" && repoUrl ? parseGiteaRemote(repoUrl) : undefined;
+
   const git: GitInfo = {
     baseBranch: detectBaseBranch(root),
     remote: "origin",
-    repoUrl: detectRemoteUrl(root),
+    repoUrl,
+    provider,
+    giteaApiUrl: giteaInfo?.apiUrl,
+    giteaRepo: giteaInfo?.repo,
   };
 
   const productSpec = findProductSpec(root);
