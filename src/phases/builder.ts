@@ -3,6 +3,7 @@ import type { ProjectContext } from "../context/types.js";
 import { buildBuilderPrompt } from "../context/prompts.js";
 import { runAgent } from "../core/agent.js";
 import type { EvidenceLedger } from "../core/evidence.js";
+import { buildReportRelPath } from "../core/handoff.js";
 import { parseDeclaredFiles } from "../core/risk.js";
 import { log } from "../util/logger.js";
 
@@ -11,6 +12,7 @@ export async function runBuilders(
   specPath: string,
   model: string,
   ledger?: EvidenceLedger,
+  sprint?: number,
 ): Promise<void> {
   const specContent = readFileSync(specPath, "utf-8");
 
@@ -21,11 +23,11 @@ export async function runBuilders(
 
   if (hasBackend && hasFrontend) {
     // Monorepo with both — run backend first, then frontend
-    await runScopedBuilder(ctx, specContent, "backend", model, ledger);
-    await runScopedBuilder(ctx, specContent, "frontend", model, ledger);
+    await runScopedBuilder(ctx, specContent, "backend", model, ledger, sprint);
+    await runScopedBuilder(ctx, specContent, "frontend", model, ledger, sprint);
   } else {
     // Single scope — run everything
-    await runScopedBuilder(ctx, specContent, "all", model, ledger);
+    await runScopedBuilder(ctx, specContent, "all", model, ledger, sprint);
   }
 }
 
@@ -35,10 +37,15 @@ async function runScopedBuilder(
   scope: "backend" | "frontend" | "all",
   model: string,
   ledger?: EvidenceLedger,
+  sprint?: number,
 ): Promise<void> {
   log(`Running ${scope} builder...`);
 
-  const prompt = buildBuilderPrompt(ctx, specContent, scope);
+  // Handoff: the builder reports what it built/decided/deviated so the
+  // auditor judges deviations instead of discovering them
+  const reportPath =
+    sprint !== undefined ? buildReportRelPath(sprint, scope) : undefined;
+  const prompt = buildBuilderPrompt(ctx, specContent, scope, reportPath);
 
   const scopedWorkspaces = ctx.workspaces.filter((w) => {
     if (scope === "all") return true;

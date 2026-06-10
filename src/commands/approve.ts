@@ -1,11 +1,12 @@
 import { resolve } from "node:path";
 import { loadState, saveState } from "../core/state.js";
+import { approveArchitecture, loadArchitecture } from "../phases/architect.js";
 import { initLogger, log } from "../util/logger.js";
 
 /**
- * Release a sprint that is parked at a human gate (plan-first or
- * ambiguity). Approval is recorded on the saved state; the next
- * `ralph run` resumes from the build phase with the gates satisfied.
+ * Release whatever is parked at a human gate: a sprint paused at the
+ * plan-first/ambiguity gate, or a draft ARCHITECTURE.md from the
+ * greenfield interview. The next `ralph run` continues past the gate.
  */
 export function approve(dir: string): void {
   const root = resolve(dir);
@@ -13,11 +14,21 @@ export function approve(dir: string): void {
 
   const state = loadState(root);
   if (!state) {
-    log("Nothing to approve — no sprint is in progress.");
+    if (approveArchitecture(root)) {
+      log("Approved ARCHITECTURE.md.");
+      log("  Run `ralph run` to scaffold against it.");
+      return;
+    }
+    log("Nothing to approve — no sprint is in progress and no draft architecture is pending.");
     return;
   }
 
   if (!state.awaitingApproval) {
+    if (loadArchitecture(root)?.status === "draft" && approveArchitecture(root)) {
+      log("Approved ARCHITECTURE.md.");
+      log("  Run `ralph run` to scaffold against it.");
+      return;
+    }
     log(`Sprint ${state.sprint} is not waiting at a gate (phase: ${state.phase}).`);
     return;
   }

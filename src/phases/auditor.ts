@@ -17,11 +17,12 @@ export async function auditSpec(
   ctx: ProjectContext,
   specPath: string,
   model: string,
+  buildReport?: string | null,
 ): Promise<AuditResult> {
   log("Running spec compliance audit...");
 
   const specContent = readFileSync(specPath, "utf-8");
-  const prompt = buildAuditPrompt(ctx, specContent);
+  const prompt = buildAuditPrompt(ctx, specContent, buildReport);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const currentPrompt =

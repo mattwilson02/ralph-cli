@@ -4,6 +4,7 @@ import type { ProjectContext } from "../context/types.js";
 import type { EngineOptions, SprintOutcome } from "../types.js";
 import { loadState, saveState, clearState } from "./state.js";
 import { EvidenceLedger } from "./evidence.js";
+import { readBuildReports, writeOutcomeSummary } from "./handoff.js";
 import { assessRisk, resolveAutonomy } from "./risk.js";
 import { writeSpec } from "../phases/spec-writer.js";
 import { runBuilders } from "../phases/builder.js";
@@ -183,7 +184,7 @@ export async function runEngine(
         }
 
         log(`Entering build phase (specPath: ${specPath})`);
-        await runBuilders(ctx, specPath, opts.models.builder, ledger);
+        await runBuilders(ctx, specPath, opts.models.builder, ledger, sprint);
 
         // Scope containment: tests passing does not excuse out-of-scope
         // changes — containment violations escalate regardless.
@@ -265,7 +266,10 @@ export async function runEngine(
 
       // ── Phase: Audit ──
       if (shouldRun(startPhase, "audit") && !isTimedOut()) {
-        const audit = await auditSpec(ctx, specPath, opts.models.auditor);
+        // Handoff: the auditor judges the builder's reported deviations,
+        // not just the spec checklist
+        const buildReport = readBuildReports(ctx.root, sprint);
+        const audit = await auditSpec(ctx, specPath, opts.models.auditor, buildReport);
         ledger.recordAudit(audit);
 
         // Unknown is not the same as passed
@@ -278,7 +282,7 @@ export async function runEngine(
         if (audit.missing.length > 0) {
           log(`Audit found ${audit.missing.length} missing items — attempting to fix`);
           // Re-run builder for missing items, then re-verify
-          await runBuilders(ctx, specPath, opts.models.builder, ledger);
+          await runBuilders(ctx, specPath, opts.models.builder, ledger, sprint);
           const recovery = await verifyAndFix(
             ctx,
             "full",
@@ -323,23 +327,31 @@ export async function runEngine(
         });
       }
 
-      // Sprint complete
+      // Sprint complete — hand the outcome off to future sprints
+      writeOutcomeSummary(ctx.root, ledger.data);
       clearState(ctx.root);
       const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-      log(`\nSprint ${sprint} finished in ${elapsed} minutes — outcome: ${outcome.toUpperCase()}`);
+      log(`\nSprint ${sprint} verdict: ${outcome.toUpperCase()} (${elapsed} min${ledger.hasEscalations ? `, ${ledger.escalations.length} escalation reason(s)` : ""})`);
+      for (const reason of ledger.escalations) log(`  - ${reason}`);
 
-      if (outcome !== "shipped") {
-        // Escalation ladder: a sprint that needs human judgment ends the
-        // run — chaining further sprints onto unverified work compounds
-        // the failure.
-        for (const reason of ledger.escalations) log(`  - ${reason}`);
-        if (outcome === "blocked") process.exitCode = 1;
-        log("Stopping: this sprint needs human review before Ralph continues.");
+      if (outcome === "blocked") {
+        // Escalation ladder, top rung: the failure policy says this work
+        // must not leave the machine — continuing would compound it.
+        process.exitCode = 1;
+        log("Stopping: this sprint is blocked and needs human review before Ralph continues.");
         break;
       }
 
-      // Track this branch so the next sprint chains from it
-      previousBranch = branchName;
+      if (outcome === "escalated") {
+        // Overnight-safe escalation: the draft PR holds the unverified work
+        // for human review, and the run continues. The next sprint chains
+        // from the last known-good branch — never from escalated work — and
+        // its spec writer receives the outcome summary so it can pivot.
+        log(`Escalated: draft PR holds this work for review — continuing from ${previousBranch || ctx.git.baseBranch}.`);
+      } else {
+        // Track this branch so the next sprint chains from it
+        previousBranch = branchName;
+      }
 
       if (opts.singleMode) {
         log("Single mode — stopping after one sprint");
