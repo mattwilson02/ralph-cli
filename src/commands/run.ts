@@ -114,6 +114,7 @@ export async function run(flags: RunFlags): Promise<void> {
     maxFixAttempts: parseInt(flags.maxFixAttempts || "3", 10),
     maxResumeAttempts: 3,
     sprintTimeout: parseInt(flags.sprintTimeout || "45", 10),
+    onVerifyFailure: config?.onVerifyFailure || "draft-pr",
     models: {
       specWriter: flags.specModel || DEFAULT_MODELS.specWriter,
       builder: flags.buildModel || DEFAULT_MODELS.builder,
