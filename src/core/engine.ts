@@ -15,6 +15,7 @@ import {
   isBranchMergedInto,
   ensureGitignore,
 } from "../util/git.js";
+import { cleanupStaleSessions } from "./agent.js";
 import { log, initLogger } from "../util/logger.js";
 
 export async function runEngine(
@@ -22,6 +23,7 @@ export async function runEngine(
   opts: EngineOptions,
 ): Promise<void> {
   initLogger(ctx.root);
+  cleanupStaleSessions(ctx.root);
   log("═".repeat(60));
   log(`  Ralph — ${ctx.name}`);
   log(`  Base branch: ${ctx.git.baseBranch}`);
