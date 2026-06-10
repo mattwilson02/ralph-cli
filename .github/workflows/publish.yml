@@ -31,17 +31,25 @@ jobs:
         id: version
         run: |
           CURRENT=$(node -p "require('./package.json').version")
-          PUBLISHED=$(npm view ralph-agent version 2>/dev/null || echo "0.0.0")
-          if [ "$CURRENT" != "$PUBLISHED" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "Publishing v$CURRENT (was v$PUBLISHED)"
-          else
+          # Check the exact version, not the latest tag — re-running a
+          # workflow must not attempt to publish over an existing version
+          if npm view "ralph-agent@$CURRENT" version >/dev/null 2>&1; then
             echo "changed=false" >> $GITHUB_OUTPUT
             echo "v$CURRENT already published — skipping"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Publishing v$CURRENT"
+          fi
+          # Prereleases (alpha/beta/rc) go under the `next` dist-tag so
+          # `npx ralph-agent` keeps resolving to the last stable release
+          if [[ "$CURRENT" == *-* ]]; then
+            echo "tag=next" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
           fi
 
       - name: Publish
         if: steps.version.outputs.changed == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag ${{ steps.version.outputs.tag }}
