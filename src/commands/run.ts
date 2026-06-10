@@ -4,6 +4,7 @@ import { scanProject } from "../context/scanner.js";
 import { runEngine } from "../core/engine.js";
 import { loadConfig } from "../config.js";
 import { loadState } from "../core/state.js";
+import { loadArchitecture, runArchitectInterview } from "../phases/architect.js";
 import { listBranches } from "../util/git.js";
 import { log } from "../util/logger.js";
 import { ask, isInteractive } from "../util/prompt.js";
@@ -99,7 +100,16 @@ export async function run(flags: RunFlags): Promise<void> {
   const nextSprint = detectNextSprint(ctx.sprintsDir, root);
   const greenfield = isGreenfield(ctx) && nextSprint === 1;
   if (greenfield) {
-    log("Greenfield project detected — Ralph will scaffold before building.");
+    // Greenfield HITL: Ralph never invents an architecture. The interview
+    // drafts ARCHITECTURE.md, the human approves it, and only then does
+    // sprint 1 scaffold against it.
+    const proceed = await ensureApprovedArchitecture(
+      ctx,
+      root,
+      flags.specModel || DEFAULT_MODELS.specWriter,
+    );
+    if (!proceed) return;
+    log("Greenfield project — sprint 1 will scaffold against the approved ARCHITECTURE.md.");
   }
 
   // Resume from saved state, or detect next sprint from existing specs/branches
@@ -148,6 +158,42 @@ export async function run(flags: RunFlags): Promise<void> {
   };
 
   await runEngine(ctx, opts);
+}
+
+/**
+ * Greenfield gate: returns true only when an approved ARCHITECTURE.md
+ * exists. Otherwise runs the interview (interactive) or refuses
+ * (headless), and the caller exits so the human can review.
+ */
+async function ensureApprovedArchitecture(
+  ctx: ReturnType<typeof scanProject>,
+  root: string,
+  model: string,
+): Promise<boolean> {
+  const arch = loadArchitecture(root);
+
+  if (arch?.status === "approved") return true;
+
+  if (arch?.status === "draft") {
+    log("ARCHITECTURE.md is still a draft — Ralph won't scaffold against an unapproved architecture.");
+    log("  Review and edit it, then run `ralph approve` followed by `ralph run`.");
+    process.exitCode = 1;
+    return false;
+  }
+
+  // No architecture at all
+  if (!isInteractive()) {
+    log("Greenfield project with no ARCHITECTURE.md — Ralph refuses to invent an architecture unattended.");
+    log("  Run `ralph run` in a terminal to do the architecture interview,");
+    log("  or write ARCHITECTURE.md yourself and re-run.");
+    process.exitCode = 1;
+    return false;
+  }
+
+  await runArchitectInterview(ctx, model);
+  log("\nARCHITECTURE.md written (status: draft).");
+  log("  Review and edit it, then run `ralph approve` followed by `ralph run` to scaffold against it.");
+  return false;
 }
 
 /**

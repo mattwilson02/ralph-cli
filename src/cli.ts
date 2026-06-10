@@ -57,7 +57,11 @@ program
   .argument("[dir]", "project directory", ".")
   .option("--spec <path>", "set the product spec path (saved to .ralph.yaml)")
   .option("--base-branch <branch>", "set the base branch (saved to .ralph.yaml)")
-  .action((dir: string, opts: { spec?: string; baseBranch?: string }) => {
+  .option(
+    "--governance",
+    "scaffold the repo-side control plane (PR template, CODEOWNERS, required-checks workflow) and print the branch-protection checklist",
+  )
+  .action((dir: string, opts: { spec?: string; baseBranch?: string; governance?: boolean }) => {
     init(dir, opts);
   });
 

@@ -61,6 +61,9 @@ export async function verifyAndFix(
   ledger?: EvidenceLedger,
 ): Promise<VerifyResult> {
   let previousFailed: string[] | null = null;
+  // Handoff between fix attempts: each agent sees what was already tried
+  // (including attempts from earlier verify scopes and crash-recovered runs)
+  const priorAttempts = [...(ledger?.data?.fixAttempts ?? [])];
 
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     const result = verify(ctx, scope, ledger, attempt);
@@ -94,7 +97,7 @@ export async function verifyAndFix(
     );
 
     const specContent = readFileSync(specPath, "utf-8");
-    const fixPrompt = buildFixPrompt(ctx, result.output, specContent);
+    const fixPrompt = buildFixPrompt(ctx, result.output, specContent, priorAttempts);
 
     const fixSummary = await runAgent(fixPrompt, {
       cwd: ctx.root,
@@ -119,6 +122,11 @@ export async function verifyAndFix(
     });
 
     ledger?.recordFixAttempt(attempt, result.failedChecks, fixSummary);
+    priorAttempts.push({
+      attempt,
+      failedChecks: result.failedChecks,
+      summary: fixSummary.slice(0, 1000),
+    });
     previousFailed = result.failedChecks;
   }
 
