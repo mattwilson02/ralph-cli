@@ -1,4 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { readdirSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { log } from "../util/logger.js";
 
 export interface AgentOptions {
@@ -16,6 +19,7 @@ interface AgentResult {
   turns: number;
   cost: number;
   sessionId?: string;
+  connected: boolean;
 }
 
 /**
@@ -128,7 +132,7 @@ async function runAgentInner(
 }
 
 const AGENT_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes with no messages = hung
-const AGENT_INIT_TIMEOUT_MS = 30 * 1000; // 30 seconds to get first message
+const AGENT_INIT_TIMEOUT_MS = 60 * 1000; // 60 seconds to get first working message
 const AGENT_CONNECT_RETRIES = 2;
 
 async function runAgentOnce(
@@ -143,16 +147,16 @@ async function runAgentOnce(
 
     const result = await runAgentStream(prompt, opts);
 
-    // If we got 0 turns and timed out, the connection failed — retry
-    if (result.subtype === "error_timeout" && result.turns === 0 && connAttempt < AGENT_CONNECT_RETRIES) {
-      log("  Agent failed to connect (0 turns) — retrying...");
+    // If agent never produced work and timed out, the connection failed — retry
+    if (result.subtype === "error_timeout" && !result.connected && connAttempt < AGENT_CONNECT_RETRIES) {
+      log("  Agent failed to connect — retrying...");
       continue;
     }
 
     return result;
   }
 
-  return { result: "", subtype: "error_timeout", turns: 0, cost: 0 };
+  return { result: "", subtype: "error_timeout", turns: 0, cost: 0, connected: false };
 }
 
 async function runAgentStream(
@@ -164,7 +168,7 @@ async function runAgentStream(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`  Agent crashed: ${msg}`);
-    return { result: "", subtype: "error_crash", turns: 0, cost: 0 };
+    return { result: "", subtype: "error_crash", turns: 0, cost: 0, connected: false };
   }
 }
 
@@ -197,8 +201,6 @@ async function runAgentStreamInner(
       prompt,
       options: opts,
     } as Parameters<typeof query>[0])) {
-      gotFirstMessage = true;
-      resetTimer();
       const msg = message as Record<string, unknown>;
 
       if (
@@ -207,7 +209,14 @@ async function runAgentStreamInner(
         typeof msg.session_id === "string"
       ) {
         sessionId = msg.session_id;
+        // Don't count init as "first message" — agent hasn't started working yet.
+        // Keep the short init timeout until we see actual work.
+        continue;
       }
+
+      // Actual agent activity — now we know it's working
+      gotFirstMessage = true;
+      resetTimer();
 
       if (msg.type === "result") {
         result = typeof msg.result === "string" ? msg.result : "";
@@ -232,5 +241,110 @@ async function runAgentStreamInner(
     subtype = "error_timeout";
   }
 
-  return { result, subtype, turns, cost, sessionId };
+  // Clean up the session-env directory for this session to prevent accumulation
+  if (sessionId) {
+    cleanupSessionEnv(sessionId);
+  }
+
+  return { result, subtype, turns, cost, sessionId, connected: gotFirstMessage };
+}
+
+/**
+ * Remove a session's env directory after the agent completes.
+ * Claude Agent SDK creates a dir per session in ~/.claude/session-env/
+ * and never cleans them up — over time this accumulates hundreds of
+ * empty directories that can interfere with new session startup.
+ */
+function cleanupSessionEnv(sessionId: string): void {
+  try {
+    const sessionEnvDir = join(homedir(), ".claude", "session-env", sessionId);
+    rmSync(sessionEnvDir, { recursive: true, force: true });
+  } catch {
+    // Best-effort — don't let cleanup failures affect the run
+  }
+}
+
+/**
+ * Bulk cleanup of stale Claude session artifacts.
+ * Called once at Ralph startup to prevent long-term accumulation.
+ *
+ * Cleans two locations:
+ * 1. ~/.claude/session-env/<uuid>/ — empty dirs created per agent call
+ * 2. ~/.claude/projects/<project-key>/<uuid>.jsonl — session transcripts
+ *    that accumulate across sprints and can grow to 10s of MBs, causing
+ *    the SDK to choke on startup when scanning/loading them.
+ */
+export function cleanupStaleSessions(projectRoot?: string, maxAgeMs: number = 2 * 60 * 60 * 1000): void {
+  const claudeDir = join(homedir(), ".claude");
+  let totalCleaned = 0;
+
+  // 1. Clean session-env directories
+  try {
+    const sessionEnvDir = join(claudeDir, "session-env");
+    const entries = readdirSync(sessionEnvDir, { withFileTypes: true });
+    const now = Date.now();
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const dirPath = join(sessionEnvDir, entry.name);
+        const stat = statSync(dirPath);
+        if (now - stat.mtimeMs > maxAgeMs) {
+          rmSync(dirPath, { recursive: true, force: true });
+          totalCleaned++;
+        }
+      } catch {
+        // Skip entries we can't stat
+      }
+    }
+  } catch {
+    // session-env dir might not exist
+  }
+
+  // 2. Clean project session transcripts (.jsonl files and associated dirs)
+  if (projectRoot) {
+    try {
+      const projectKey = projectRoot.replace(/\//g, "-");
+      const projectDir = join(claudeDir, "projects", projectKey);
+      const entries = readdirSync(projectDir, { withFileTypes: true });
+      const now = Date.now();
+      let projectCleaned = 0;
+
+      for (const entry of entries) {
+        const entryPath = join(projectDir, entry.name);
+        // Clean .jsonl transcripts and .jsonl.wakatime files
+        if (entry.name.endsWith(".jsonl") || entry.name.endsWith(".jsonl.wakatime")) {
+          try {
+            const stat = statSync(entryPath);
+            if (now - stat.mtimeMs > maxAgeMs) {
+              rmSync(entryPath, { force: true });
+              projectCleaned++;
+            }
+          } catch {
+            // Skip
+          }
+        }
+        // Clean session UUID directories (not files like CLAUDE.md or settings)
+        if (entry.isDirectory() && /^[0-9a-f]{8}-/.test(entry.name)) {
+          try {
+            const stat = statSync(entryPath);
+            if (now - stat.mtimeMs > maxAgeMs) {
+              rmSync(entryPath, { recursive: true, force: true });
+              projectCleaned++;
+            }
+          } catch {
+            // Skip
+          }
+        }
+      }
+
+      totalCleaned += projectCleaned;
+    } catch {
+      // Project dir might not exist
+    }
+  }
+
+  if (totalCleaned > 0) {
+    log(`  Cleaned ${totalCleaned} stale session artifact(s)`);
+  }
 }

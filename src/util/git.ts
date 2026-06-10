@@ -80,7 +80,7 @@ export function ensureGitignore(root: string): void {
   const { ok } = runSafe(`test -f ${gitignorePath}`, root);
 
   // Ralph's own working files — must never be committed
-  const ralphFiles = ["ralph.log", ".ralph-state.json"];
+  const ralphFiles = ["ralph.log", ".ralph-state.json", ".ralph/"];
 
   if (!ok) {
     const defaults = [
@@ -135,11 +135,12 @@ export function createPR(
   provider: GitProvider = "github",
   giteaApiUrl?: string,
   giteaRepo?: string,
+  draft: boolean = false,
 ): string {
   if (provider === "gitea" && giteaApiUrl && giteaRepo) {
-    return createGiteaPR(root, title, body, baseBranch, giteaApiUrl, giteaRepo);
+    return createGiteaPR(root, title, body, baseBranch, giteaApiUrl, giteaRepo, draft);
   }
-  return createGithubPR(root, title, body, baseBranch);
+  return createGithubPR(root, title, body, baseBranch, draft);
 }
 
 function createGithubPR(
@@ -147,14 +148,15 @@ function createGithubPR(
   title: string,
   body: string,
   baseBranch: string,
+  draft: boolean,
 ): string {
   const escapedBody = body.replace(/"/g, '\\"').replace(/`/g, "\\`");
   const output = run(
-    `gh pr create --title "${title}" --body "${escapedBody}" --base ${baseBranch}`,
+    `gh pr create --title "${title}" --body "${escapedBody}" --base ${baseBranch}${draft ? " --draft" : ""}`,
     root,
   );
   const prUrl = output.split("\n").pop() || output;
-  log(`  PR created (GitHub): ${prUrl}`);
+  log(`  PR created (GitHub${draft ? ", draft" : ""}): ${prUrl}`);
   return prUrl;
 }
 
@@ -165,6 +167,7 @@ function createGiteaPR(
   baseBranch: string,
   apiUrl: string,
   repo: string,
+  draft: boolean = false,
 ): string {
   // Get current branch name as the head branch
   const { ok, output: headBranch } = runSafe("git branch --show-current", root);
@@ -176,8 +179,10 @@ function createGiteaPR(
     throw new Error("GITEA_TOKEN environment variable is required for Gitea PR creation");
   }
 
+  // Gitea has no draft flag in the create-PR API — the WIP: title prefix
+  // is the Gitea convention for marking a PR as work-in-progress.
   const payload = JSON.stringify({
-    title,
+    title: draft ? `WIP: ${title}` : title,
     body,
     base: baseBranch,
     head: headBranch,

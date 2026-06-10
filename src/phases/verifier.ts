@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { ProjectContext, Check } from "../context/types.js";
 import { buildFixPrompt } from "../context/prompts.js";
 import { runAgent } from "../core/agent.js";
+import type { EvidenceLedger } from "../core/evidence.js";
 import { runSafe } from "../util/exec.js";
 import { log } from "../util/logger.js";
 import type { VerifyResult } from "../types.js";
@@ -12,6 +13,8 @@ import type { VerifyResult } from "../types.js";
 export function verify(
   ctx: ProjectContext,
   scope: "backend" | "frontend" | "full",
+  ledger?: EvidenceLedger,
+  attempt: number = 0,
 ): VerifyResult {
   const checks = getChecksForScope(ctx, scope);
 
@@ -24,6 +27,8 @@ export function verify(
     const { ok, output } = runSafe(check.cmd, ctx.root + "/" + check.cwd);
     const status = ok ? "PASS" : "FAIL";
     log(`  ${status}: ${check.name}`);
+
+    ledger?.recordCheck(attempt, check.name, check.cmd, ok, ok ? undefined : output);
 
     if (!ok) {
       failedChecks.push(check.name);
@@ -40,6 +45,11 @@ export function verify(
 
 /**
  * Run verify + fix loop with retries.
+ *
+ * Safe iteration policy: if a fix attempt makes no progress (the same set of
+ * checks is still failing and nothing previously failing now passes), stop
+ * early and escalate instead of burning the remaining attempts on identical
+ * failures.
  */
 export async function verifyAndFix(
   ctx: ProjectContext,
@@ -47,20 +57,35 @@ export async function verifyAndFix(
   specPath: string,
   fixModel: string,
   maxAttempts: number,
-): Promise<boolean> {
+  ledger?: EvidenceLedger,
+): Promise<VerifyResult> {
+  let previousFailed: string[] | null = null;
+
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
-    const result = verify(ctx, scope);
+    const result = verify(ctx, scope, ledger, attempt);
 
     if (result.passed) {
       log(`All ${scope} checks passed`);
-      return true;
+      return result;
+    }
+
+    // No progress since the last attempt — the fix agent is stuck.
+    // Escalate now rather than retrying the same failure.
+    if (previousFailed && !madeProgress(previousFailed, result.failedChecks)) {
+      log(
+        `${scope} checks made no progress after fix attempt (still failing: ${result.failedChecks.join(", ")}) — escalating early`,
+      );
+      ledger?.escalate(
+        `Fix loop stalled: ${result.failedChecks.join(", ")} failed twice in a row with no progress (stopped after ${attempt} of ${maxAttempts} fix attempts)`,
+      );
+      return result;
     }
 
     if (attempt === maxAttempts) {
       log(
         `${scope} checks still failing after ${maxAttempts} fix attempts: ${result.failedChecks.join(", ")}`,
       );
-      return false;
+      return result;
     }
 
     log(
@@ -70,7 +95,7 @@ export async function verifyAndFix(
     const specContent = readFileSync(specPath, "utf-8");
     const fixPrompt = buildFixPrompt(ctx, result.output, specContent);
 
-    await runAgent(fixPrompt, {
+    const fixSummary = await runAgent(fixPrompt, {
       cwd: ctx.root,
       model: fixModel,
       allowedTools: [
@@ -83,11 +108,24 @@ export async function verifyAndFix(
       ],
       maxTurns: 30,
       systemPromptAppend:
-        "You are a fix agent. Fix the verification failures. Do NOT introduce new features. Do NOT delete or skip failing tests.",
+        "You are a fix agent. Fix the verification failures. Do NOT introduce new features. Do NOT delete or skip failing tests. End with a one-paragraph summary of what you changed and why.",
     });
+
+    ledger?.recordFixAttempt(attempt, result.failedChecks, fixSummary);
+    previousFailed = result.failedChecks;
   }
 
-  return false;
+  // Unreachable — the loop always returns on the final attempt
+  return { passed: false, output: "", failedChecks: [] };
+}
+
+/**
+ * Progress means at least one previously-failing check now passes.
+ * New failures appearing alongside old ones still count as stalled
+ * if nothing got fixed.
+ */
+function madeProgress(previousFailed: string[], currentFailed: string[]): boolean {
+  return previousFailed.some((check) => !currentFailed.includes(check));
 }
 
 function getChecksForScope(

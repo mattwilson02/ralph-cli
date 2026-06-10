@@ -1,10 +1,12 @@
+import { relative } from "node:path";
 import type { ProjectContext } from "../context/types.js";
-import type { EngineOptions } from "../types.js";
+import type { EngineOptions, SprintOutcome } from "../types.js";
 import { loadState, saveState, clearState } from "./state.js";
+import { EvidenceLedger } from "./evidence.js";
 import { writeSpec } from "../phases/spec-writer.js";
 import { runBuilders } from "../phases/builder.js";
 import { verifyAndFix } from "../phases/verifier.js";
-import { auditSpec } from "../phases/auditor.js";
+import { auditSpec, AUDIT_PARSE_FAILURE } from "../phases/auditor.js";
 import { ship } from "../phases/shipper.js";
 import {
   createBranch,
@@ -15,6 +17,7 @@ import {
   isBranchMergedInto,
   ensureGitignore,
 } from "../util/git.js";
+import { cleanupStaleSessions } from "./agent.js";
 import { log, initLogger } from "../util/logger.js";
 
 export async function runEngine(
@@ -22,6 +25,7 @@ export async function runEngine(
   opts: EngineOptions,
 ): Promise<void> {
   initLogger(ctx.root);
+  cleanupStaleSessions(ctx.root);
   log("═".repeat(60));
   log(`  Ralph — ${ctx.name}`);
   log(`  Base branch: ${ctx.git.baseBranch}`);
@@ -79,6 +83,11 @@ export async function runEngine(
     const timeoutMs = opts.sprintTimeout * 60 * 1000;
     const isTimedOut = () => Date.now() - startTime > timeoutMs;
 
+    // Audit trail for this sprint — persisted to .ralph/evidence/ so it
+    // survives crash recovery alongside the phase state.
+    const ledger = new EvidenceLedger(ctx.root, sprint);
+    ledger.setGoal(deriveGoal(ctx, opts));
+
     try {
       // ── Phase: Spec ──
       if (shouldRun(startPhase, "spec")) {
@@ -104,6 +113,9 @@ export async function runEngine(
       if (!specPath || !specName || !branchName) {
         throw new Error("No spec available — cannot continue");
       }
+
+      ledger.setSpec(specName, specPath);
+      ledger.setBranch(branchName);
 
       // ── Phase: Build ──
       if (shouldRun(startPhase, "build")) {
@@ -136,6 +148,7 @@ export async function runEngine(
             specPath,
             opts.models.fixAgent,
             opts.maxFixAttempts,
+            ledger,
           );
         }
 
@@ -150,16 +163,22 @@ export async function runEngine(
 
       // ── Phase: Full Verify ──
       if (shouldRun(startPhase, "full_verify") && !isTimedOut()) {
-        const passed = await verifyAndFix(
+        const result = await verifyAndFix(
           ctx,
           "full",
           specPath,
           opts.models.fixAgent,
           opts.maxFixAttempts,
+          ledger,
         );
 
-        if (!passed) {
-          log("Full verification failed — shipping anyway with known issues");
+        // Policy gate: a failed verification changes the outcome, not just
+        // the log line. (The stalled-fix-loop case escalates inside
+        // verifyAndFix; this covers exhausting all attempts.)
+        if (!result.passed && !ledger.hasEscalations) {
+          ledger.escalate(
+            `Full verification failed after ${opts.maxFixAttempts} fix attempts: ${result.failedChecks.join(", ")}`,
+          );
         }
 
         saveState(ctx.root, {
@@ -174,18 +193,32 @@ export async function runEngine(
       // ── Phase: Audit ──
       if (shouldRun(startPhase, "audit") && !isTimedOut()) {
         const audit = await auditSpec(ctx, specPath, opts.models.auditor);
+        ledger.recordAudit(audit);
+
+        // Unknown is not the same as passed
+        if (audit.issues.includes(AUDIT_PARSE_FAILURE)) {
+          ledger.escalate(
+            "Spec audit output could not be parsed — spec conformance is unknown",
+          );
+        }
 
         if (audit.missing.length > 0) {
           log(`Audit found ${audit.missing.length} missing items — attempting to fix`);
           // Re-run builder for missing items, then re-verify
           await runBuilders(ctx, specPath, opts.models.builder);
-          await verifyAndFix(
+          const recovery = await verifyAndFix(
             ctx,
             "full",
             specPath,
             opts.models.fixAgent,
             opts.maxFixAttempts,
+            ledger,
           );
+          if (!recovery.passed) {
+            ledger.escalate(
+              `Audit recovery rebuild still failing verification: ${recovery.failedChecks.join(", ")}`,
+            );
+          }
         }
 
         saveState(ctx.root, {
@@ -199,18 +232,38 @@ export async function runEngine(
 
       if (isTimedOut()) {
         const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-        log(`\nSprint timeout after ${elapsed} min — shipping with current state`);
+        log(`\nSprint timeout after ${elapsed} min — escalating with current state`);
+        ledger.escalate(
+          `Sprint timed out after ${elapsed} min — later phases were skipped and the work is unverified`,
+        );
       }
 
       // ── Phase: PR ──
+      const outcome = resolveOutcome(ledger, opts);
+      ledger.setOutcome(outcome);
+
       if (shouldRun(startPhase, "pr")) {
-        ship(ctx, branchName, specName, previousBranch || undefined);
+        ship(ctx, branchName, specName, {
+          parentBranch: previousBranch || undefined,
+          outcome,
+          evidenceMarkdown: ledger.renderMarkdown(),
+        });
       }
 
       // Sprint complete
       clearState(ctx.root);
       const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-      log(`\nSprint ${sprint} complete in ${elapsed} minutes`);
+      log(`\nSprint ${sprint} finished in ${elapsed} minutes — outcome: ${outcome.toUpperCase()}`);
+
+      if (outcome !== "shipped") {
+        // Escalation ladder: a sprint that needs human judgment ends the
+        // run — chaining further sprints onto unverified work compounds
+        // the failure.
+        for (const reason of ledger.escalations) log(`  - ${reason}`);
+        if (outcome === "blocked") process.exitCode = 1;
+        log("Stopping: this sprint needs human review before Ralph continues.");
+        break;
+      }
 
       // Track this branch so the next sprint chains from it
       previousBranch = branchName;
@@ -226,6 +279,34 @@ export async function runEngine(
   }
 
   log("\nRalph finished.");
+}
+
+/**
+ * The first link of the audit trail: what was Ralph asked to achieve?
+ */
+function deriveGoal(ctx: ProjectContext, opts: EngineOptions): string {
+  if (opts.task) return `Directed task: ${opts.task}`;
+  if (opts.improve)
+    return "Improvement mode: highest-value quality fixes found in the codebase (no product spec)";
+  if (ctx.productSpec)
+    return `Next increment of the product spec: \`${relative(ctx.root, ctx.productSpec)}\``;
+  return "(no goal recorded)";
+}
+
+/**
+ * Resolve the sprint outcome from accumulated escalations and the
+ * configured failure policy.
+ */
+function resolveOutcome(ledger: EvidenceLedger, opts: EngineOptions): SprintOutcome {
+  if (!ledger.hasEscalations) return "shipped";
+  switch (opts.onVerifyFailure) {
+    case "ship":
+      return "shipped";
+    case "block":
+      return "blocked";
+    default:
+      return "escalated";
+  }
 }
 
 /**

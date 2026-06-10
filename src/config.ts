@@ -1,12 +1,20 @@
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import type { VerifyFailurePolicy } from "./types.js";
 
 export interface RalphConfig {
   spec?: string;
   baseBranch?: string;
+  onVerifyFailure?: VerifyFailurePolicy;
 }
 
 const CONFIG_FILE = ".ralph.yaml";
+
+const VERIFY_FAILURE_POLICIES: VerifyFailurePolicy[] = [
+  "draft-pr",
+  "block",
+  "ship",
+];
 
 export function loadConfig(root: string): RalphConfig | null {
   const configPath = join(root, CONFIG_FILE);
@@ -19,6 +27,14 @@ export function loadConfig(root: string): RalphConfig | null {
 
   const branchMatch = content.match(/^baseBranch:\s*(.+)$/m);
   if (branchMatch) config.baseBranch = branchMatch[1].trim();
+
+  const verifyMatch = content.match(/^onVerifyFailure:\s*(.+)$/m);
+  if (verifyMatch) {
+    const value = verifyMatch[1].trim() as VerifyFailurePolicy;
+    if (VERIFY_FAILURE_POLICIES.includes(value)) {
+      config.onVerifyFailure = value;
+    }
+  }
 
   return config;
 }
@@ -33,5 +49,7 @@ export function saveConfig(root: string, config: RalphConfig): void {
   ];
   if (merged.spec) lines.push(`spec: ${merged.spec}`);
   if (merged.baseBranch) lines.push(`baseBranch: ${merged.baseBranch}`);
+  if (merged.onVerifyFailure)
+    lines.push(`onVerifyFailure: ${merged.onVerifyFailure}`);
   writeFileSync(join(root, CONFIG_FILE), lines.join("\n") + "\n");
 }
