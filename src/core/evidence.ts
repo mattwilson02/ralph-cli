@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join, relative } from "node:path";
 import { runSafe } from "../util/exec.js";
 import type {
@@ -98,6 +104,45 @@ export class EvidenceLedger {
     this.save();
   }
 
+  recordRisk(risk: { level: string; reasons: string[] }): void {
+    this.record.risk = risk;
+    this.save();
+  }
+
+  recordScope(scope: {
+    declared: string[];
+    changed: string[];
+    outOfScope: string[];
+  }): void {
+    this.record.scope = scope;
+    this.save();
+  }
+
+  /**
+   * Append a tool-use audit entry to the sprint's .jsonl side file —
+   * every agent Write/Edit/Bash call (and every guardrail denial) is
+   * reconstructable without bloating the main evidence record.
+   */
+  recordToolUse(entry: {
+    role: string;
+    tool: string;
+    detail: string;
+    denied: boolean;
+    reason?: string;
+    at: string;
+  }): void {
+    try {
+      const dir = join(this.root, ".ralph", "evidence");
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      appendFileSync(
+        join(dir, `sprint-${this.record.sprint}-tools.jsonl`),
+        JSON.stringify(entry) + "\n",
+      );
+    } catch {
+      // Audit logging must never break the pipeline
+    }
+  }
+
   /** Record a reason this sprint cannot ship as a normal PR. */
   escalate(reason: string): void {
     this.record.escalations.push(reason);
@@ -148,11 +193,25 @@ export class EvidenceLedger {
 
     sections.push(`## Goal\n${r.goal || "(no goal recorded)"}`);
 
-    sections.push(
-      `## Plan\nSprint spec: \`${r.specPath || "(none)"}\` (committed on this branch)`,
-    );
+    const planLines = [
+      `Sprint spec: \`${r.specPath || "(none)"}\` (committed on this branch)`,
+    ];
+    if (r.risk) {
+      planLines.push(
+        "",
+        `**Risk assessment:** ${r.risk.level}`,
+        ...r.risk.reasons.map((reason) => `- ${reason}`),
+      );
+    }
+    sections.push(`## Plan\n${planLines.join("\n")}`);
 
     sections.push(`## Evidence\n${this.renderEvidenceSection()}`);
+
+    if (r.risk && r.risk.level !== "low") {
+      sections.push(
+        `## Risks & Rollback\nThis change was assessed **${r.risk.level}** risk — review the affected areas carefully.\nRollback: revert the merge commit, or delete branch \`${r.branchName || "<branch>"}\` before merging.`,
+      );
+    }
 
     const outcomeLines = [`**${r.outcome || "unknown"}**`];
     if (r.escalations.length > 0) {
@@ -205,6 +264,14 @@ export class EvidenceLedger {
           `- Attempt ${f.attempt + 1} (${f.failedChecks.join(", ")}): ${f.summary || "(no summary)"}`,
       );
       parts.push(`**Fix attempts:**\n${lines.join("\n")}`);
+    }
+
+    if (r.scope) {
+      parts.push(
+        r.scope.outOfScope.length === 0
+          ? `**Scope check:** all ${r.scope.changed.length} changed file(s) within the spec's declared scope`
+          : `**Scope check:** ⚠️ ${r.scope.outOfScope.length} file(s) changed outside declared scope:\n${r.scope.outOfScope.map((f) => `- \`${f}\``).join("\n")}`,
+      );
     }
 
     if (r.audit) {

@@ -1,11 +1,12 @@
 import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import type { VerifyFailurePolicy } from "./types.js";
+import type { AutonomyMode, VerifyFailurePolicy } from "./types.js";
 
 export interface RalphConfig {
   spec?: string;
   baseBranch?: string;
   onVerifyFailure?: VerifyFailurePolicy;
+  autonomy?: AutonomyMode;
 }
 
 const CONFIG_FILE = ".ralph.yaml";
@@ -36,6 +37,14 @@ export function loadConfig(root: string): RalphConfig | null {
     }
   }
 
+  const autonomyMatch = content.match(/^autonomy:\s*(.+)$/m);
+  if (autonomyMatch) {
+    const value = autonomyMatch[1].trim() as AutonomyMode;
+    if (value === "auto" || value === "plan-first") {
+      config.autonomy = value;
+    }
+  }
+
   return config;
 }
 
@@ -51,5 +60,6 @@ export function saveConfig(root: string, config: RalphConfig): void {
   if (merged.baseBranch) lines.push(`baseBranch: ${merged.baseBranch}`);
   if (merged.onVerifyFailure)
     lines.push(`onVerifyFailure: ${merged.onVerifyFailure}`);
+  if (merged.autonomy) lines.push(`autonomy: ${merged.autonomy}`);
   writeFileSync(join(root, CONFIG_FILE), lines.join("\n") + "\n");
 }
