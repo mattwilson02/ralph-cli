@@ -4,6 +4,7 @@ import { init } from "./commands/init.js";
 import { run } from "./commands/run.js";
 import { spec } from "./commands/spec.js";
 import { watchCommand } from "./commands/watch.js";
+import { approve } from "./commands/approve.js";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json");
@@ -56,7 +57,11 @@ program
   .argument("[dir]", "project directory", ".")
   .option("--spec <path>", "set the product spec path (saved to .ralph.yaml)")
   .option("--base-branch <branch>", "set the base branch (saved to .ralph.yaml)")
-  .action((dir: string, opts: { spec?: string; baseBranch?: string }) => {
+  .option(
+    "--governance",
+    "scaffold the repo-side control plane (PR template, CODEOWNERS, required-checks workflow) and print the branch-protection checklist",
+  )
+  .action((dir: string, opts: { spec?: string; baseBranch?: string; governance?: boolean }) => {
     init(dir, opts);
   });
 
@@ -76,9 +81,27 @@ program
   .option("--build-model <model>", "model for builder agents")
   .option("--fix-model <model>", "model for fix agents")
   .option("--audit-model <model>", "model for auditor")
+  .option("--autonomy <mode>", "workflow mode: auto | plan-first (default: Ralph judges from risk)")
+  .option("--approve", "approve a sprint paused at a human gate and continue")
+  .option("--goal <text>", "codeowner goal for this run (recorded in the audit trail)")
   .action(async (flags) => {
     try {
       await run(flags);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\nRalph failed: ${message}`);
+      if (process.env.DEBUG) console.error(err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("approve")
+  .description("Approve a sprint paused at a human gate (plan-first / ambiguity)")
+  .argument("[dir]", "project directory", ".")
+  .action((dir: string) => {
+    try {
+      approve(dir);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`\nRalph failed: ${message}`);

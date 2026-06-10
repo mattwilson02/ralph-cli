@@ -99,10 +99,60 @@ export function getExistingSpecs(
 /**
  * Build the spec writer prompt.
  */
+/**
+ * The machine-readable scope declaration every sprint spec must carry —
+ * the post-build scope check compares the actual changeset against it.
+ */
+const DECLARED_FILES_INSTRUCTION = `**Declared Files section is mandatory.** End the spec with a \`## Declared Files\` section listing EVERY file the builders may create or modify, one backticked path per bullet (directories with a trailing slash are allowed for groups of new files):
+
+\`\`\`
+## Declared Files
+- \`src/api/users.ts\`
+- \`src/api/users.test.ts\`
+- \`src/components/UserList/\`
+\`\`\`
+
+Changes outside this list are treated as scope violations and block the PR.`;
+
+function goalSection(goal?: string): string {
+  if (!goal) return "";
+  return `### Codeowner Goal & Constraints
+${goal}
+
+Treat this as the inherited goal: the sprint must serve it, and anything it rules out is out of scope.
+
+`;
+}
+
+/**
+ * Cross-sprint handoff: what previous sprints actually produced. An
+ * escalated/blocked sprint's work sits on an unmerged branch — the spec
+ * writer must plan around that, not on top of it.
+ */
+function outcomeSection(outcomeHistory?: string | null): string {
+  if (!outcomeHistory) return "";
+  return `### Previous Sprint Outcomes
+${outcomeHistory}
+
+If a previous sprint ended ESCALATED or BLOCKED, its work is on an unmerged branch awaiting human review — it does NOT exist in the codebase you are planning against. Do not plan work that depends on it. Either pick independent work, or (only if the goal demands it) re-plan that work from scratch in this sprint.
+
+`;
+}
+
+export interface SpecWriterExtras {
+  /** Codeowner goal inherited at intake */
+  goal?: string;
+  /** Outcome summaries handed off from previous sprints */
+  outcomes?: string | null;
+  /** Approved ARCHITECTURE.md content (greenfield) */
+  architecture?: string | null;
+}
+
 export function buildSpecWriterPrompt(
   ctx: ProjectContext,
   sprintNumber: number,
   greenfield = false,
+  extras: SpecWriterExtras = {},
 ): string {
   const productSpec = ctx.productSpec
     ? readFileSync(ctx.productSpec, "utf-8")
@@ -125,7 +175,7 @@ export function buildSpecWriterPrompt(
 
 ## Context
 
-### Project Overview
+${goalSection(extras.goal)}${outcomeSection(extras.outcomes)}### Project Overview
 ${buildProjectSummary(ctx)}
 
 ### Verification Commands
@@ -133,7 +183,7 @@ ${checksDescription}
 
 ### Product Spec
 ${productSpec || "No product spec found. Analyze the existing codebase and determine what improvements, features, or fixes would be most valuable."}
-
+${extras.architecture ? `\n### Approved Architecture (ARCHITECTURE.md)\n${extras.architecture}\n` : ""}
 ### Previous Sprint Specs (already implemented)
 ${previousSpecsSummary || "No previous sprints. This is the first sprint."}
 
@@ -172,7 +222,9 @@ ${ctx.docs.length > 0 ? ctx.docs.map((d) => `- ${d}`).join("\n") : "None found."
    - Never bundle more than 2 related features in a single sprint
    - A sprint that finishes cleanly is worth more than an ambitious one that times out
 
-${greenfield ? `7. **This is a new project.** Your first sprint spec MUST include project scaffolding: directory structure, configuration files, base patterns, and a small initial feature. Establish the foundation that future sprints build on.\n\n` : ""}IMPORTANT: Write the spec file to ${ctx.sprintsDir}/sprint-${sprintNumber}-<descriptive-name>.md
+7. ${DECLARED_FILES_INSTRUCTION}
+
+${greenfield ? `8. **This is a new project.** ${extras.architecture ? "An approved ARCHITECTURE.md governs this project (included above). Your first sprint spec MUST scaffold exactly the structure, stack, and patterns it defines — never invent your own architecture, and flag (don't silently resolve) any conflict between the architecture and the product spec." : "Your first sprint spec MUST include project scaffolding: directory structure, configuration files, base patterns, and a small initial feature."} Establish the foundation that future sprints build on.\n\n` : ""}IMPORTANT: Write the spec file to ${ctx.sprintsDir}/sprint-${sprintNumber}-<descriptive-name>.md
 
 After writing the file, output ONLY the filename on the last line.`;
 }
@@ -234,6 +286,8 @@ After writing the file, output a brief summary of what you found and wrote.`;
 export function buildImprovementPrompt(
   ctx: ProjectContext,
   sprintNumber: number,
+  goal?: string,
+  outcomes?: string | null,
 ): string {
   const previousSpecs = getExistingSpecs(ctx.sprintsDir);
   const previousSpecsSummary = previousSpecs
@@ -252,7 +306,7 @@ export function buildImprovementPrompt(
 
 ## Context
 
-### Project Overview
+${goalSection(goal)}${outcomeSection(outcomes)}### Project Overview
 ${buildProjectSummary(ctx)}
 
 ### Verification Commands
@@ -296,6 +350,8 @@ You have NO product spec. Your job is to analyze the codebase and find the most 
    - Maximum **15 new files** per sprint
    - Maximum **5 tasks** per sprint
    - A sprint that finishes cleanly is worth more than an ambitious one that times out
+
+6. ${DECLARED_FILES_INSTRUCTION}
 
 IMPORTANT: Write the spec file to ${ctx.sprintsDir}/sprint-${sprintNumber}-<descriptive-name>.md
 
@@ -359,6 +415,8 @@ ${task}
    - Maximum **5 tasks** per sprint
    - A sprint that finishes cleanly is worth more than an ambitious one that times out
 
+6. ${DECLARED_FILES_INSTRUCTION}
+
 IMPORTANT: Write the spec file to ${ctx.sprintsDir}/sprint-${sprintNumber}-<descriptive-name>.md
 
 After writing the file, output ONLY the filename on the last line.`;
@@ -371,6 +429,7 @@ export function buildBuilderPrompt(
   ctx: ProjectContext,
   specContent: string,
   scope: "backend" | "frontend" | "all",
+  buildReportFile?: string,
 ): string {
   const targetWorkspaces = ctx.workspaces.filter((w) => {
     if (scope === "all") return true;
@@ -412,7 +471,7 @@ ${specContent}
 4. ${patternGuidance}
 5. After implementing, verify your work passes:
 ${checksDescription}
-
+${buildReportFile ? `\n6. **Write a build report** to \`${buildReportFile}\` when you finish — it hands your work off to the auditor. Sections: **Built** (what you implemented), **Decisions** (choices the spec left open), **Deviations** (anywhere you departed from the spec, and why), **Concerns** (anything fragile or unfinished). Be honest — the auditor checks deviations, it doesn't punish them.\n` : ""}
 IMPORTANT:
 - Do NOT modify files outside your scope unless the spec explicitly requires it
 - Do NOT skip tests — write all tests specified in the spec
@@ -427,14 +486,25 @@ export function buildFixPrompt(
   ctx: ProjectContext,
   failures: string,
   specContent: string,
+  priorAttempts: { attempt: number; failedChecks: string[]; summary: string }[] = [],
 ): string {
+  const priorSection =
+    priorAttempts.length > 0
+      ? `\n## Prior Fix Attempts (handoff — do NOT repeat these)\n${priorAttempts
+          .map(
+            (a) =>
+              `- Attempt ${a.attempt + 1} (failing: ${a.failedChecks.join(", ")}): ${a.summary || "(no summary)"}`,
+          )
+          .join("\n")}\n\nThese approaches did not fully resolve the failures. Diagnose differently — re-trying the same fix wastes the attempt and escalates the sprint.\n`
+      : "";
+
   return `You are the fix agent for ${ctx.name}.
 
 The builder agent's work has verification failures. Fix them.
 
 ## Failures
 ${failures}
-
+${priorSection}
 ## Sprint Spec (for context)
 ${specContent}
 
@@ -455,15 +525,16 @@ Do NOT delete or skip failing tests.`;
 export function buildAuditPrompt(
   ctx: ProjectContext,
   specContent: string,
+  buildReport?: string | null,
 ): string {
   return `You are the spec compliance auditor for ${ctx.name}.
 
 ## Sprint Spec
 ${specContent}
-
+${buildReport ? `\n## Builder Handoff Report\nThe builder reported what it built, decisions it made, and where it deviated from the spec. Audit the deviations too — a deviation is acceptable only if it still satisfies the spec's requirements; otherwise list it under "issues".\n\n${buildReport}\n` : ""}
 ## Instructions
 
-1. Read the sprint spec
+1. Read the sprint spec${buildReport ? " and the builder's handoff report" : ""}
 2. Read the code that was written
 3. Check every requirement, acceptance criterion, and test case in the spec
 4. Report what was completed and what was missed

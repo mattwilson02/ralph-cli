@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { log } from "../util/logger.js";
 
+import type { GuardrailPolicy } from "./guardrails.js";
+import { createGuardrailHook } from "./guardrails.js";
+
 export interface AgentOptions {
   model: string;
   allowedTools: string[];
@@ -11,6 +14,12 @@ export interface AgentOptions {
   permissionMode?: string;
   maxTurns?: number;
   systemPromptAppend?: string;
+  /**
+   * Deterministic tool gating for this agent's role. Allowlists and
+   * PreToolUse denials are enforcement; system-prompt instructions are
+   * only guidance.
+   */
+  guardrails?: GuardrailPolicy;
 }
 
 interface AgentResult {
@@ -71,6 +80,11 @@ async function runAgentInner(
           type: "preset" as const,
           preset: "claude_code" as const,
           append: "\n" + opts.systemPromptAppend,
+        }
+      : undefined,
+    hooks: opts.guardrails
+      ? {
+          PreToolUse: [{ hooks: [createGuardrailHook(opts.guardrails)] }],
         }
       : undefined,
   };

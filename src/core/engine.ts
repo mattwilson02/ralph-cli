@@ -1,13 +1,19 @@
-import { relative } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import type { ProjectContext } from "../context/types.js";
 import type { EngineOptions, SprintOutcome } from "../types.js";
 import { loadState, saveState, clearState } from "./state.js";
 import { EvidenceLedger } from "./evidence.js";
+import { readBuildReports, writeOutcomeSummary } from "./handoff.js";
+import { assessRisk, resolveAutonomy } from "./risk.js";
 import { writeSpec } from "../phases/spec-writer.js";
 import { runBuilders } from "../phases/builder.js";
 import { verifyAndFix } from "../phases/verifier.js";
 import { auditSpec, AUDIT_PARSE_FAILURE } from "../phases/auditor.js";
+import { checkAmbiguity } from "../phases/ambiguity.js";
+import { checkScope } from "../phases/scope-check.js";
 import { ship } from "../phases/shipper.js";
+import { confirm, isInteractive } from "../util/prompt.js";
 import {
   createBranch,
   renameBranch,
@@ -65,6 +71,19 @@ export async function runEngine(
     const resuming = state !== null && state.sprint === sprint;
     const startPhase = resuming ? state!.phase : "spec";
 
+    // Sprint is parked at a human gate — `ralph approve` (or --approve)
+    // is the only way past it.
+    if (resuming && state!.awaitingApproval && !opts.approve) {
+      log(`Sprint ${sprint} is paused at the ${state!.gate || "approval"} gate.`);
+      log(`  Spec: ${state!.specPath}`);
+      log("  Review it, then run `ralph approve` and re-run `ralph run` to continue.");
+      return;
+    }
+    if (resuming && state!.awaitingApproval && opts.approve) {
+      state = { ...state!, awaitingApproval: false, approved: true };
+      saveState(ctx.root, state);
+    }
+
     // Determine parent branch for chaining
     const parentBranch = previousBranch || ctx.git.baseBranch;
 
@@ -95,6 +114,7 @@ export async function runEngine(
           task: opts.task,
           greenfield: opts.greenfield,
           improve: opts.improve,
+          goal: opts.goal,
         });
         specName = spec.name;
         specPath = spec.path;
@@ -119,8 +139,62 @@ export async function runEngine(
 
       // ── Phase: Build ──
       if (shouldRun(startPhase, "build")) {
+        const gatesApproved = state?.approved === true || opts.approve === true;
+        const specContent = readFileSync(specPath, "utf-8");
+
+        const risk = assessRisk(ctx, specContent, { greenfield: opts.greenfield });
+        ledger.recordRisk(risk);
+        log(`Risk assessment: ${risk.level.toUpperCase()}`);
+        for (const reason of risk.reasons) log(`  - ${reason}`);
+
+        if (!gatesApproved) {
+          // Plan-first gate: explicit human choice overrides Ralph's
+          // risk-based judgment; high risk means the plan is approved
+          // before any code is generated.
+          const mode = resolveAutonomy(opts.autonomy, risk);
+          if (mode === "plan-first") {
+            log(`Workflow: plan-first (${opts.autonomy ? "set by --autonomy" : "Ralph's judgment from risk level"})`);
+            const approved = await gateForHuman(ctx.root, "plan", {
+              sprint,
+              specName,
+              specPath,
+              branchName,
+              question: `Plan-first gate — review the sprint spec (${relative(ctx.root, specPath)}). Proceed with build?`,
+            });
+            if (!approved) return;
+          }
+
+          // Ambiguity gate: catch spec errors before they masquerade as
+          // implementation errors 200 turns later.
+          const ambiguity = await checkAmbiguity(ctx, specPath, opts.models.auditor);
+          if (!ambiguity.actionable) {
+            const questionsPath = writeQuestionsFile(ctx.root, sprint, specPath, ambiguity.ambiguities);
+            log("The spec needs human input before building:");
+            for (const q of ambiguity.ambiguities) log(`  ? ${q}`);
+            log(`  Questions written to ${relative(ctx.root, questionsPath)}`);
+            const approved = await gateForHuman(ctx.root, "ambiguity", {
+              sprint,
+              specName,
+              specPath,
+              branchName,
+              question: "Ambiguity gate — proceed with build anyway (or answer by editing the spec first)?",
+            });
+            if (!approved) return;
+          }
+        }
+
         log(`Entering build phase (specPath: ${specPath})`);
-        await runBuilders(ctx, specPath, opts.models.builder);
+        await runBuilders(ctx, specPath, opts.models.builder, ledger, sprint);
+
+        // Scope containment: tests passing does not excuse out-of-scope
+        // changes — containment violations escalate regardless.
+        const scope = checkScope(ctx, readFileSync(specPath, "utf-8"));
+        ledger.recordScope(scope);
+        if (scope.outOfScope.length > 0) {
+          ledger.escalate(
+            `Scope violation: files changed outside the spec's declared scope: ${scope.outOfScope.join(", ")}`,
+          );
+        }
 
         saveState(ctx.root, {
           sprint,
@@ -192,7 +266,10 @@ export async function runEngine(
 
       // ── Phase: Audit ──
       if (shouldRun(startPhase, "audit") && !isTimedOut()) {
-        const audit = await auditSpec(ctx, specPath, opts.models.auditor);
+        // Handoff: the auditor judges the builder's reported deviations,
+        // not just the spec checklist
+        const buildReport = readBuildReports(ctx.root, sprint);
+        const audit = await auditSpec(ctx, specPath, opts.models.auditor, buildReport);
         ledger.recordAudit(audit);
 
         // Unknown is not the same as passed
@@ -205,7 +282,7 @@ export async function runEngine(
         if (audit.missing.length > 0) {
           log(`Audit found ${audit.missing.length} missing items — attempting to fix`);
           // Re-run builder for missing items, then re-verify
-          await runBuilders(ctx, specPath, opts.models.builder);
+          await runBuilders(ctx, specPath, opts.models.builder, ledger, sprint);
           const recovery = await verifyAndFix(
             ctx,
             "full",
@@ -250,23 +327,31 @@ export async function runEngine(
         });
       }
 
-      // Sprint complete
+      // Sprint complete — hand the outcome off to future sprints
+      writeOutcomeSummary(ctx.root, ledger.data);
       clearState(ctx.root);
       const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-      log(`\nSprint ${sprint} finished in ${elapsed} minutes — outcome: ${outcome.toUpperCase()}`);
+      log(`\nSprint ${sprint} verdict: ${outcome.toUpperCase()} (${elapsed} min${ledger.hasEscalations ? `, ${ledger.escalations.length} escalation reason(s)` : ""})`);
+      for (const reason of ledger.escalations) log(`  - ${reason}`);
 
-      if (outcome !== "shipped") {
-        // Escalation ladder: a sprint that needs human judgment ends the
-        // run — chaining further sprints onto unverified work compounds
-        // the failure.
-        for (const reason of ledger.escalations) log(`  - ${reason}`);
-        if (outcome === "blocked") process.exitCode = 1;
-        log("Stopping: this sprint needs human review before Ralph continues.");
+      if (outcome === "blocked") {
+        // Escalation ladder, top rung: the failure policy says this work
+        // must not leave the machine — continuing would compound it.
+        process.exitCode = 1;
+        log("Stopping: this sprint is blocked and needs human review before Ralph continues.");
         break;
       }
 
-      // Track this branch so the next sprint chains from it
-      previousBranch = branchName;
+      if (outcome === "escalated") {
+        // Overnight-safe escalation: the draft PR holds the unverified work
+        // for human review, and the run continues. The next sprint chains
+        // from the last known-good branch — never from escalated work — and
+        // its spec writer receives the outcome summary so it can pivot.
+        log(`Escalated: draft PR holds this work for review — continuing from ${previousBranch || ctx.git.baseBranch}.`);
+      } else {
+        // Track this branch so the next sprint chains from it
+        previousBranch = branchName;
+      }
 
       if (opts.singleMode) {
         log("Single mode — stopping after one sprint");
@@ -282,9 +367,73 @@ export async function runEngine(
 }
 
 /**
+ * Pause the sprint at a human gate. Interactive runs ask inline; headless
+ * runs park the sprint (state saved with awaitingApproval) and exit so
+ * `ralph approve` can release it later. Returns true when the human
+ * approved inline.
+ */
+async function gateForHuman(
+  root: string,
+  gate: "plan" | "ambiguity",
+  info: {
+    sprint: number;
+    specName: string;
+    specPath: string;
+    branchName: string;
+    question: string;
+  },
+): Promise<boolean> {
+  if (isInteractive()) {
+    const approved = await confirm(`\n${info.question}`);
+    if (approved) return true;
+  }
+
+  saveState(root, {
+    sprint: info.sprint,
+    phase: "build",
+    specName: info.specName,
+    specPath: info.specPath,
+    branchName: info.branchName,
+    awaitingApproval: true,
+    gate,
+  });
+  log(`\nSprint ${info.sprint} paused at the ${gate} gate.`);
+  log(`  Spec: ${info.specPath}`);
+  log("  Review/edit it, then run `ralph approve` and re-run `ralph run` to continue.");
+  return false;
+}
+
+function writeQuestionsFile(
+  root: string,
+  sprint: number,
+  specPath: string,
+  ambiguities: string[],
+): string {
+  const dir = join(root, ".ralph");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const path = join(dir, `questions-sprint-${sprint}.md`);
+  writeFileSync(
+    path,
+    [
+      `# Sprint ${sprint} — open questions before build`,
+      "",
+      `Spec: \`${relative(root, specPath)}\``,
+      "",
+      "The pre-build review found ambiguities that need a human decision.",
+      "Answer them by editing the spec, then run `ralph approve` and re-run `ralph run`.",
+      "",
+      ...ambiguities.map((q) => `- [ ] ${q}`),
+      "",
+    ].join("\n"),
+  );
+  return path;
+}
+
+/**
  * The first link of the audit trail: what was Ralph asked to achieve?
  */
 function deriveGoal(ctx: ProjectContext, opts: EngineOptions): string {
+  if (opts.goal) return opts.goal;
   if (opts.task) return `Directed task: ${opts.task}`;
   if (opts.improve)
     return "Improvement mode: highest-value quality fixes found in the codebase (no product spec)";

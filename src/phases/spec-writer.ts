@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { ProjectContext } from "../context/types.js";
 import {
   buildSpecWriterPrompt,
@@ -8,12 +8,16 @@ import {
   getExistingSpecs,
 } from "../context/prompts.js";
 import { runAgent } from "../core/agent.js";
+import { readOutcomeSummaries } from "../core/handoff.js";
+import { loadArchitecture } from "./architect.js";
 import { log } from "../util/logger.js";
 
 interface WriteSpecOptions {
   task?: string;
   greenfield?: boolean;
   improve?: boolean;
+  /** Codeowner goal inherited at intake */
+  goal?: string;
 }
 
 export async function writeSpec(
@@ -51,16 +55,27 @@ export async function writeSpec(
   let prompt: string;
   let systemPrompt: string;
 
+  // Cross-sprint handoff: what previous sprints actually produced
+  // (including escalations the new spec must plan around)
+  const outcomes = readOutcomeSummaries(ctx.root);
+  const architecture = options.greenfield
+    ? loadArchitecture(ctx.root)?.content
+    : undefined;
+
   if (mode === "task") {
     prompt = buildTaskPrompt(ctx, sprintNumber, options.task!);
     systemPrompt =
       "You are writing a focused sprint spec for a directed task. Explore the codebase to understand the context, then write a precise spec. Focus on WHAT to build, WHY, and WHERE — not HOW. Never write implementation code. Reference existing patterns by name.";
   } else if (mode === "spec") {
-    prompt = buildSpecWriterPrompt(ctx, sprintNumber, options.greenfield);
+    prompt = buildSpecWriterPrompt(ctx, sprintNumber, options.greenfield, {
+      goal: options.goal,
+      outcomes,
+      architecture,
+    });
     systemPrompt =
       "You are writing a sprint spec. Focus on WHAT to build, WHY, and WHERE — not HOW. Never write implementation code. Reference existing patterns by name. The builder agents have full codebase access.";
   } else {
-    prompt = buildImprovementPrompt(ctx, sprintNumber);
+    prompt = buildImprovementPrompt(ctx, sprintNumber, options.goal, outcomes);
     systemPrompt =
       "You are writing an improvement sprint spec. Analyze the codebase for the most impactful quality improvements. Never add new features — focus on making existing code better. Never write implementation code.";
   }
@@ -71,6 +86,13 @@ export async function writeSpec(
     allowedTools: ["Read", "Write", "Glob", "Grep"],
     maxTurns: 50,
     systemPromptAppend: systemPrompt,
+    guardrails: {
+      role: "spec-writer",
+      root: ctx.root,
+      // Planning agents don't execute — the only thing a spec writer may
+      // write is the sprint spec itself
+      writePaths: [relative(ctx.root, ctx.sprintsDir)],
+    },
   });
 
   // Find the spec that was just created

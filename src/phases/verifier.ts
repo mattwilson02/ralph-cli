@@ -3,6 +3,7 @@ import type { ProjectContext, Check } from "../context/types.js";
 import { buildFixPrompt } from "../context/prompts.js";
 import { runAgent } from "../core/agent.js";
 import type { EvidenceLedger } from "../core/evidence.js";
+import { parseDeclaredFiles } from "../core/risk.js";
 import { runSafe } from "../util/exec.js";
 import { log } from "../util/logger.js";
 import type { VerifyResult } from "../types.js";
@@ -60,6 +61,9 @@ export async function verifyAndFix(
   ledger?: EvidenceLedger,
 ): Promise<VerifyResult> {
   let previousFailed: string[] | null = null;
+  // Handoff between fix attempts: each agent sees what was already tried
+  // (including attempts from earlier verify scopes and crash-recovered runs)
+  const priorAttempts = [...(ledger?.data?.fixAttempts ?? [])];
 
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     const result = verify(ctx, scope, ledger, attempt);
@@ -93,7 +97,7 @@ export async function verifyAndFix(
     );
 
     const specContent = readFileSync(specPath, "utf-8");
-    const fixPrompt = buildFixPrompt(ctx, result.output, specContent);
+    const fixPrompt = buildFixPrompt(ctx, result.output, specContent, priorAttempts);
 
     const fixSummary = await runAgent(fixPrompt, {
       cwd: ctx.root,
@@ -109,9 +113,20 @@ export async function verifyAndFix(
       maxTurns: 30,
       systemPromptAppend:
         "You are a fix agent. Fix the verification failures. Do NOT introduce new features. Do NOT delete or skip failing tests. End with a one-paragraph summary of what you changed and why.",
+      guardrails: {
+        role: "fixer",
+        root: ctx.root,
+        declaredPaths: parseDeclaredFiles(specContent),
+        onToolUse: ledger ? (entry) => ledger.recordToolUse(entry) : undefined,
+      },
     });
 
     ledger?.recordFixAttempt(attempt, result.failedChecks, fixSummary);
+    priorAttempts.push({
+      attempt,
+      failedChecks: result.failedChecks,
+      summary: fixSummary.slice(0, 1000),
+    });
     previousFailed = result.failedChecks;
   }
 

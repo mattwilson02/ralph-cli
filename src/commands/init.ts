@@ -2,11 +2,13 @@ import { resolve, relative, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { scanProject } from "../context/scanner.js";
 import { loadConfig, saveConfig } from "../config.js";
+import { scaffoldGovernance, printGovernanceChecklist } from "./governance.js";
 import { log } from "../util/logger.js";
 
 interface InitOptions {
   spec?: string;
   baseBranch?: string;
+  governance?: boolean;
 }
 
 export function init(dir?: string, opts?: InitOptions): void {
@@ -41,6 +43,17 @@ export function init(dir?: string, opts?: InitOptions): void {
   if (configChanged) {
     saveConfig(root, newConfig);
     log(`  Saved config to .ralph.yaml\n`);
+  }
+
+  // Repo-side control plane: PR template, CODEOWNERS, required-checks
+  // workflow — plus the manual branch-protection checklist.
+  if (opts?.governance) {
+    log("Scaffolding governance control plane...\n");
+    const result = scaffoldGovernance(ctx, root);
+    for (const f of result.created) log(`  Created: ${f}`);
+    for (const f of result.skipped) log(`  Skipped (exists): ${f}`);
+    printGovernanceChecklist(ctx);
+    return;
   }
 
   log(`  Project:         ${ctx.name}`);

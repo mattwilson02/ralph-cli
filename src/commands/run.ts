@@ -1,13 +1,15 @@
-import { resolve, join } from "node:path";
-import { readdirSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { scanProject } from "../context/scanner.js";
 import { runEngine } from "../core/engine.js";
 import { loadConfig } from "../config.js";
 import { loadState } from "../core/state.js";
+import { loadArchitecture, runArchitectInterview } from "../phases/architect.js";
 import { listBranches } from "../util/git.js";
 import { log } from "../util/logger.js";
+import { ask, isInteractive } from "../util/prompt.js";
 import { DEFAULT_MODELS } from "../types.js";
-import type { EngineOptions } from "../types.js";
+import type { AutonomyMode, EngineOptions } from "../types.js";
 
 function detectNextSprint(sprintsDir: string, root: string): number {
   let maxSprint = 0;
@@ -51,6 +53,9 @@ interface RunFlags {
   buildModel?: string;
   fixModel?: string;
   auditModel?: string;
+  autonomy?: string;
+  approve?: boolean;
+  goal?: string;
 }
 
 function isGreenfield(ctx: ReturnType<typeof scanProject>): boolean {
@@ -95,7 +100,16 @@ export async function run(flags: RunFlags): Promise<void> {
   const nextSprint = detectNextSprint(ctx.sprintsDir, root);
   const greenfield = isGreenfield(ctx) && nextSprint === 1;
   if (greenfield) {
-    log("Greenfield project detected — Ralph will scaffold before building.");
+    // Greenfield HITL: Ralph never invents an architecture. The interview
+    // drafts ARCHITECTURE.md, the human approves it, and only then does
+    // sprint 1 scaffold against it.
+    const proceed = await ensureApprovedArchitecture(
+      ctx,
+      root,
+      flags.specModel || DEFAULT_MODELS.specWriter,
+    );
+    if (!proceed) return;
+    log("Greenfield project — sprint 1 will scaffold against the approved ARCHITECTURE.md.");
   }
 
   // Resume from saved state, or detect next sprint from existing specs/branches
@@ -103,6 +117,23 @@ export async function run(flags: RunFlags): Promise<void> {
   const defaultSprint = savedState
     ? savedState.sprint
     : nextSprint;
+
+  // Autonomy: explicit human choice (flag > config) overrides Ralph's
+  // risk-based judgment; undefined lets the engine judge per sprint
+  let autonomy: AutonomyMode | undefined;
+  if (flags.autonomy === "auto" || flags.autonomy === "plan-first") {
+    autonomy = flags.autonomy;
+  } else if (flags.autonomy) {
+    log(`Unknown --autonomy value "${flags.autonomy}" — expected auto or plan-first`);
+    process.exit(1);
+  } else {
+    autonomy = config?.autonomy;
+  }
+
+  // Intake / scope screening: inherit the codeowner's goal before setting
+  // off. Task mode carries its goal in the flag; otherwise use --goal, a
+  // previously saved goal, or a short interactive intake on a fresh run.
+  const inheritedGoal = await resolveGoal(root, flags, savedState !== null);
 
   const opts: EngineOptions = {
     startSprint: parseInt(flags.sprint || String(defaultSprint), 10),
@@ -115,6 +146,9 @@ export async function run(flags: RunFlags): Promise<void> {
     maxResumeAttempts: 3,
     sprintTimeout: parseInt(flags.sprintTimeout || "45", 10),
     onVerifyFailure: config?.onVerifyFailure || "draft-pr",
+    autonomy,
+    approve: flags.approve ?? false,
+    goal: inheritedGoal,
     models: {
       specWriter: flags.specModel || DEFAULT_MODELS.specWriter,
       builder: flags.buildModel || DEFAULT_MODELS.builder,
@@ -124,4 +158,100 @@ export async function run(flags: RunFlags): Promise<void> {
   };
 
   await runEngine(ctx, opts);
+}
+
+/**
+ * Greenfield gate: returns true only when an approved ARCHITECTURE.md
+ * exists. Otherwise runs the interview (interactive) or refuses
+ * (headless), and the caller exits so the human can review.
+ */
+async function ensureApprovedArchitecture(
+  ctx: ReturnType<typeof scanProject>,
+  root: string,
+  model: string,
+): Promise<boolean> {
+  const arch = loadArchitecture(root);
+
+  if (arch?.status === "approved") return true;
+
+  if (arch?.status === "draft") {
+    log("ARCHITECTURE.md is still a draft — Ralph won't scaffold against an unapproved architecture.");
+    log("  Review and edit it, then run `ralph approve` followed by `ralph run`.");
+    process.exitCode = 1;
+    return false;
+  }
+
+  // No architecture at all
+  if (!isInteractive()) {
+    log("Greenfield project with no ARCHITECTURE.md — Ralph refuses to invent an architecture unattended.");
+    log("  Run `ralph run` in a terminal to do the architecture interview,");
+    log("  or write ARCHITECTURE.md yourself and re-run.");
+    process.exitCode = 1;
+    return false;
+  }
+
+  await runArchitectInterview(ctx, model);
+  log("\nARCHITECTURE.md written (status: draft).");
+  log("  Review and edit it, then run `ralph approve` followed by `ralph run` to scaffold against it.");
+  return false;
+}
+
+/**
+ * Inherit the codeowner's goal — the first link of the audit trail.
+ * Priority: --task (is its own goal, recorded by the engine) > --goal >
+ * saved .ralph/goal.md > interactive intake (TTY, fresh runs only).
+ */
+async function resolveGoal(
+  root: string,
+  flags: RunFlags,
+  resuming: boolean,
+): Promise<string | undefined> {
+  if (flags.task) return undefined; // engine derives the goal from the task
+
+  const goalPath = join(root, ".ralph", "goal.md");
+
+  if (flags.goal) {
+    saveGoal(goalPath, flags.goal);
+    return flags.goal;
+  }
+
+  if (existsSync(goalPath)) {
+    const saved = readFileSync(goalPath, "utf-8").trim();
+    if (saved) return saved;
+  }
+
+  // Fresh interactive run with no goal on record — short intake
+  if (!resuming && isInteractive()) {
+    return intake(goalPath);
+  }
+
+  return undefined;
+}
+
+async function intake(goalPath: string): Promise<string | undefined> {
+  log("Intake — a few questions before Ralph sets off (Enter to skip any):\n");
+
+  const goal = await ask("  What should this run achieve? ");
+  if (!goal) {
+    log("  No goal given — Ralph will work from the product spec.\n");
+    return undefined;
+  }
+
+  const constraints = await ask("  Any constraints (tech, style, deadlines)? ");
+  const outOfScope = await ask("  Anything explicitly out of scope? ");
+
+  const parts = [goal];
+  if (constraints) parts.push(`Constraints: ${constraints}`);
+  if (outOfScope) parts.push(`Out of scope: ${outOfScope}`);
+  const composed = parts.join("\n");
+
+  saveGoal(goalPath, composed);
+  log("");
+  return composed;
+}
+
+function saveGoal(goalPath: string, goal: string): void {
+  const dir = dirname(goalPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(goalPath, goal.trim() + "\n");
 }
