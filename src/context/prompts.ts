@@ -99,10 +99,36 @@ export function getExistingSpecs(
 /**
  * Build the spec writer prompt.
  */
+/**
+ * The machine-readable scope declaration every sprint spec must carry —
+ * the post-build scope check compares the actual changeset against it.
+ */
+const DECLARED_FILES_INSTRUCTION = `**Declared Files section is mandatory.** End the spec with a \`## Declared Files\` section listing EVERY file the builders may create or modify, one backticked path per bullet (directories with a trailing slash are allowed for groups of new files):
+
+\`\`\`
+## Declared Files
+- \`src/api/users.ts\`
+- \`src/api/users.test.ts\`
+- \`src/components/UserList/\`
+\`\`\`
+
+Changes outside this list are treated as scope violations and block the PR.`;
+
+function goalSection(goal?: string): string {
+  if (!goal) return "";
+  return `### Codeowner Goal & Constraints
+${goal}
+
+Treat this as the inherited goal: the sprint must serve it, and anything it rules out is out of scope.
+
+`;
+}
+
 export function buildSpecWriterPrompt(
   ctx: ProjectContext,
   sprintNumber: number,
   greenfield = false,
+  goal?: string,
 ): string {
   const productSpec = ctx.productSpec
     ? readFileSync(ctx.productSpec, "utf-8")
@@ -125,7 +151,7 @@ export function buildSpecWriterPrompt(
 
 ## Context
 
-### Project Overview
+${goalSection(goal)}### Project Overview
 ${buildProjectSummary(ctx)}
 
 ### Verification Commands
@@ -172,7 +198,9 @@ ${ctx.docs.length > 0 ? ctx.docs.map((d) => `- ${d}`).join("\n") : "None found."
    - Never bundle more than 2 related features in a single sprint
    - A sprint that finishes cleanly is worth more than an ambitious one that times out
 
-${greenfield ? `7. **This is a new project.** Your first sprint spec MUST include project scaffolding: directory structure, configuration files, base patterns, and a small initial feature. Establish the foundation that future sprints build on.\n\n` : ""}IMPORTANT: Write the spec file to ${ctx.sprintsDir}/sprint-${sprintNumber}-<descriptive-name>.md
+7. ${DECLARED_FILES_INSTRUCTION}
+
+${greenfield ? `8. **This is a new project.** Your first sprint spec MUST include project scaffolding: directory structure, configuration files, base patterns, and a small initial feature. Establish the foundation that future sprints build on.\n\n` : ""}IMPORTANT: Write the spec file to ${ctx.sprintsDir}/sprint-${sprintNumber}-<descriptive-name>.md
 
 After writing the file, output ONLY the filename on the last line.`;
 }
@@ -234,6 +262,7 @@ After writing the file, output a brief summary of what you found and wrote.`;
 export function buildImprovementPrompt(
   ctx: ProjectContext,
   sprintNumber: number,
+  goal?: string,
 ): string {
   const previousSpecs = getExistingSpecs(ctx.sprintsDir);
   const previousSpecsSummary = previousSpecs
@@ -252,7 +281,7 @@ export function buildImprovementPrompt(
 
 ## Context
 
-### Project Overview
+${goalSection(goal)}### Project Overview
 ${buildProjectSummary(ctx)}
 
 ### Verification Commands
@@ -296,6 +325,8 @@ You have NO product spec. Your job is to analyze the codebase and find the most 
    - Maximum **15 new files** per sprint
    - Maximum **5 tasks** per sprint
    - A sprint that finishes cleanly is worth more than an ambitious one that times out
+
+6. ${DECLARED_FILES_INSTRUCTION}
 
 IMPORTANT: Write the spec file to ${ctx.sprintsDir}/sprint-${sprintNumber}-<descriptive-name>.md
 
@@ -358,6 +389,8 @@ ${task}
    - Maximum **15 new files** per sprint
    - Maximum **5 tasks** per sprint
    - A sprint that finishes cleanly is worth more than an ambitious one that times out
+
+6. ${DECLARED_FILES_INSTRUCTION}
 
 IMPORTANT: Write the spec file to ${ctx.sprintsDir}/sprint-${sprintNumber}-<descriptive-name>.md
 

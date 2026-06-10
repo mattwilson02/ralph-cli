@@ -3,6 +3,7 @@ import type { ProjectContext, Check } from "../context/types.js";
 import { buildFixPrompt } from "../context/prompts.js";
 import { runAgent } from "../core/agent.js";
 import type { EvidenceLedger } from "../core/evidence.js";
+import { parseDeclaredFiles } from "../core/risk.js";
 import { runSafe } from "../util/exec.js";
 import { log } from "../util/logger.js";
 import type { VerifyResult } from "../types.js";
@@ -109,6 +110,12 @@ export async function verifyAndFix(
       maxTurns: 30,
       systemPromptAppend:
         "You are a fix agent. Fix the verification failures. Do NOT introduce new features. Do NOT delete or skip failing tests. End with a one-paragraph summary of what you changed and why.",
+      guardrails: {
+        role: "fixer",
+        root: ctx.root,
+        declaredPaths: parseDeclaredFiles(specContent),
+        onToolUse: ledger ? (entry) => ledger.recordToolUse(entry) : undefined,
+      },
     });
 
     ledger?.recordFixAttempt(attempt, result.failedChecks, fixSummary);
