@@ -41,6 +41,8 @@ export async function runEngine(
   if (opts.greenfield) log(`  Mode: greenfield`);
   if (opts.improve) log(`  Mode: improve`);
   log(`  Sprint timeout: ${opts.sprintTimeout} min`);
+  log(`  Models: spec=${opts.models.specWriter} build=${opts.models.builder}`);
+  log(`          fix=${opts.models.fixAgent} audit=${opts.models.auditor}`);
   log("═".repeat(60));
 
   const endSprint = opts.startSprint + opts.maxSprints;

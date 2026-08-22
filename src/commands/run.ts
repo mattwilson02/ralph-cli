@@ -106,7 +106,7 @@ export async function run(flags: RunFlags): Promise<void> {
     const proceed = await ensureApprovedArchitecture(
       ctx,
       root,
-      flags.specModel || DEFAULT_MODELS.specWriter,
+      flags.specModel || config?.specModel || DEFAULT_MODELS.specWriter,
     );
     if (!proceed) return;
     log("Greenfield project — sprint 1 will scaffold against the approved ARCHITECTURE.md.");
@@ -149,11 +149,12 @@ export async function run(flags: RunFlags): Promise<void> {
     autonomy,
     approve: flags.approve ?? false,
     goal: inheritedGoal,
+    // Model priority: CLI flag > .ralph.yaml > built-in default
     models: {
-      specWriter: flags.specModel || DEFAULT_MODELS.specWriter,
-      builder: flags.buildModel || DEFAULT_MODELS.builder,
-      fixAgent: flags.fixModel || DEFAULT_MODELS.fixAgent,
-      auditor: flags.auditModel || DEFAULT_MODELS.auditor,
+      specWriter: flags.specModel || config?.specModel || DEFAULT_MODELS.specWriter,
+      builder: flags.buildModel || config?.buildModel || DEFAULT_MODELS.builder,
+      fixAgent: flags.fixModel || config?.fixModel || DEFAULT_MODELS.fixAgent,
+      auditor: flags.auditModel || config?.auditModel || DEFAULT_MODELS.auditor,
     },
   };
 

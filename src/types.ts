@@ -104,10 +104,10 @@ export interface ModelConfig {
 }
 
 export const DEFAULT_MODELS: ModelConfig = {
-  specWriter: "claude-opus-4-6",
-  builder: "claude-sonnet-4-6",
-  fixAgent: "claude-sonnet-4-6",
-  auditor: "claude-opus-4-6",
+  specWriter: "claude-opus-5",
+  builder: "claude-opus-5",
+  fixAgent: "claude-sonnet-5",
+  auditor: "claude-opus-5",
 };
 
 export interface VerifyResult {

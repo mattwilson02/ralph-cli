@@ -44,18 +44,30 @@ function makeCtx(overrides: Partial<ProjectContext> = {}): ProjectContext {
 }
 
 describe("scaffoldGovernance", () => {
-  it("creates the PR template, CODEOWNERS, and checks workflow", () => {
+  it("creates the PR template, CODEOWNERS, checks workflow, and governance judge", () => {
     const result = scaffoldGovernance(makeCtx(), root);
 
     expect(result.created).toContain(".github/pull_request_template.md");
     expect(result.created).toContain(".github/CODEOWNERS");
     expect(result.created).toContain(".github/workflows/ralph-checks.yml");
+    expect(result.created).toContain(".github/workflows/ralph-governance-judge.yml");
+    expect(result.created).toContain(".github/scripts/ralph-judge.mjs");
     expect(result.skipped).toEqual([]);
 
     const template = readFileSync(join(root, ".github/pull_request_template.md"), "utf-8");
     for (const section of ["## Goal", "## Plan", "## Evidence", "## Risks & Rollback", "## Review checklist"]) {
       expect(template).toContain(section);
     }
+
+    const judgeWorkflow = readFileSync(join(root, ".github/workflows/ralph-governance-judge.yml"), "utf-8");
+    expect(judgeWorkflow).toContain("startsWith(github.head_ref, 'sprint/')");
+    expect(judgeWorkflow).toContain("ralph-judge.mjs");
+    expect(judgeWorkflow).toContain("pull-requests: write");
+
+    const judgeScript = readFileSync(join(root, ".github/scripts/ralph-judge.mjs"), "utf-8");
+    expect(judgeScript).not.toContain("ANTHROPIC_API_KEY");
+    expect(judgeScript).toContain("gh api");
+    expect(judgeScript).toContain("evidence ledger");
   });
 
   it("workflow runs the project's detected checks", () => {
@@ -85,6 +97,9 @@ describe("scaffoldGovernance", () => {
     const result = scaffoldGovernance(makeCtx(), root);
     expect(result.skipped).toContain(".github/CODEOWNERS");
     expect(readFileSync(join(root, ".github/CODEOWNERS"), "utf-8")).toBe("/custom @someone\n");
+    // Other files should still be created
+    expect(result.created).toContain(".github/workflows/ralph-governance-judge.yml");
+    expect(result.created).toContain(".github/scripts/ralph-judge.mjs");
   });
 });
 

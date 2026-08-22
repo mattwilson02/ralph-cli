@@ -35,9 +35,30 @@ describe("loadConfig", () => {
     writeFileSync(join(root, ".ralph.yaml"), "onVerifyFailure: yolo\n");
     expect(loadConfig(root)?.onVerifyFailure).toBeUndefined();
   });
+
+  it("parses per-phase model overrides", () => {
+    writeFileSync(
+      join(root, ".ralph.yaml"),
+      "specModel: claude-opus-5\nbuildModel: claude-fable-5\nfixModel: claude-sonnet-5\nauditModel: claude-opus-5\n",
+    );
+    expect(loadConfig(root)).toEqual({
+      specModel: "claude-opus-5",
+      buildModel: "claude-fable-5",
+      fixModel: "claude-sonnet-5",
+      auditModel: "claude-opus-5",
+    });
+  });
 });
 
 describe("saveConfig", () => {
+  it("round-trips model overrides", () => {
+    saveConfig(root, { buildModel: "claude-fable-5" });
+    expect(readFileSync(join(root, ".ralph.yaml"), "utf-8")).toContain(
+      "buildModel: claude-fable-5",
+    );
+    expect(loadConfig(root)?.buildModel).toBe("claude-fable-5");
+  });
+
   it("round-trips onVerifyFailure and merges with existing values", () => {
     saveConfig(root, { spec: "SPEC.md" });
     saveConfig(root, { onVerifyFailure: "draft-pr" });

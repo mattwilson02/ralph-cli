@@ -100,7 +100,7 @@ async function runAgentInner(
       : prompt;
 
     const currentOpts = isResume
-      ? { ...queryOpts, sessionId, maxTurns: queryOpts.maxTurns }
+      ? { ...queryOpts, resume: sessionId, maxTurns: queryOpts.maxTurns }
       : queryOpts;
 
     if (isResume) {
