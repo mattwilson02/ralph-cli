@@ -78,6 +78,11 @@ export interface FixAttemptRecord {
 
 export interface EvidenceRecord {
   sprint: number;
+  /**
+   * Which attempt at this sprint this record covers. 1 unless the sprint
+   * has been re-run; earlier passes are archived beside it.
+   */
+  pass?: number;
   goal?: string;
   specName?: string;
   specPath?: string;

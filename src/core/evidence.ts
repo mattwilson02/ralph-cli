@@ -34,15 +34,23 @@ export class EvidenceLedger {
   constructor(root: string, sprint: number) {
     this.root = root;
     const existing = loadEvidence(root, sprint);
-    this.record =
-      existing ??
-      ({
-        sprint,
-        checks: [],
-        fixAttempts: [],
-        escalations: [],
-        startedAt: new Date().toISOString(),
-      } satisfies EvidenceRecord);
+
+    // `finishedAt` marks a COMPLETED pass. Re-running the same sprint starts
+    // a new one, and the previous verdict must not be inherited: escalations
+    // are conclusions about a finished attempt, so carrying them forward
+    // means a sprint that escalated once can never ship again however clean
+    // the re-run — the engine keeps branching the next sprint off older work
+    // and the good result is stranded. Archive the old pass (it is an audit
+    // trail; it is not discarded) and begin a fresh record.
+    //
+    // A record WITHOUT `finishedAt` is a crash mid-pass. That is exactly what
+    // the on-disk ledger exists for, so it is resumed untouched.
+    if (existing?.finishedAt) {
+      const archived = archiveEvidence(root, sprint, existing);
+      this.record = freshRecord(sprint, archived + 1);
+    } else {
+      this.record = existing ?? freshRecord(sprint, 1);
+    }
   }
 
   setGoal(goal: string): void {
@@ -286,6 +294,12 @@ export class EvidenceLedger {
       );
     }
 
+    if ((r.pass ?? 1) > 1) {
+      parts.push(
+        `**Pass ${r.pass} of this sprint.** Earlier passes are archived at \`.ralph/evidence/sprint-${r.sprint}.pass-*.json\`; the evidence above is this pass only.`,
+      );
+    }
+
     parts.push(`Full evidence: \`.ralph/evidence/sprint-${r.sprint}.json\` (local, not committed)`);
 
     return parts.join("\n\n");
@@ -299,6 +313,41 @@ export class EvidenceLedger {
       `- To roll back: delete this branch (\`git branch -D ${this.record.branchName || "<branch>"}\`)`,
     ].join("\n");
   }
+}
+
+function freshRecord(sprint: number, pass: number): EvidenceRecord {
+  return {
+    sprint,
+    pass,
+    checks: [],
+    fixAttempts: [],
+    escalations: [],
+    startedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Move a completed pass aside as `sprint-N.pass-K.json` and return K.
+ * Nothing is deleted — the point of the ledger is that the trail survives.
+ */
+function archiveEvidence(
+  root: string,
+  sprint: number,
+  record: EvidenceRecord,
+): number {
+  const dir = join(root, ".ralph", "evidence");
+  let pass = record.pass ?? 1;
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    while (existsSync(join(dir, `sprint-${sprint}.pass-${pass}.json`))) pass++;
+    writeFileSync(
+      join(dir, `sprint-${sprint}.pass-${pass}.json`),
+      JSON.stringify({ ...record, pass }, null, 2),
+    );
+  } catch {
+    // Archiving must never break the pipeline
+  }
+  return pass;
 }
 
 function loadEvidence(root: string, sprint: number): EvidenceRecord | null {
