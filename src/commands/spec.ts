@@ -21,7 +21,7 @@ export async function spec(dir?: string): Promise<void> {
 
   await runAgent(prompt, {
     cwd: root,
-    model: "claude-opus-4-6",
+    model: "claude-opus-5",
     allowedTools: ["Read", "Glob", "Grep"],
     maxTurns: 50,
     systemPromptAppend:

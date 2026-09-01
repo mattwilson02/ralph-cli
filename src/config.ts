@@ -7,7 +7,15 @@ export interface RalphConfig {
   baseBranch?: string;
   onVerifyFailure?: VerifyFailurePolicy;
   autonomy?: AutonomyMode;
+  /** Per-phase model overrides. CLI flags still win over these. */
+  specModel?: string;
+  buildModel?: string;
+  fixModel?: string;
+  auditModel?: string;
 }
+
+/** Config keys that map 1:1 to a `--*-model` CLI flag. */
+const MODEL_KEYS = ["specModel", "buildModel", "fixModel", "auditModel"] as const;
 
 const CONFIG_FILE = ".ralph.yaml";
 
@@ -37,6 +45,11 @@ export function loadConfig(root: string): RalphConfig | null {
     }
   }
 
+  for (const key of MODEL_KEYS) {
+    const match = content.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
+    if (match) config[key] = match[1].trim();
+  }
+
   const autonomyMatch = content.match(/^autonomy:\s*(.+)$/m);
   if (autonomyMatch) {
     const value = autonomyMatch[1].trim() as AutonomyMode;
@@ -61,5 +74,8 @@ export function saveConfig(root: string, config: RalphConfig): void {
   if (merged.onVerifyFailure)
     lines.push(`onVerifyFailure: ${merged.onVerifyFailure}`);
   if (merged.autonomy) lines.push(`autonomy: ${merged.autonomy}`);
+  for (const key of MODEL_KEYS) {
+    if (merged[key]) lines.push(`${key}: ${merged[key]}`);
+  }
   writeFileSync(join(root, CONFIG_FILE), lines.join("\n") + "\n");
 }

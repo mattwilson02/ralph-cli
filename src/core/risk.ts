@@ -122,13 +122,24 @@ export function parseDeclaredFiles(specContent: string): string[] {
 }
 
 /**
- * Who decides the workflow mode: an explicit human choice always wins;
- * otherwise Ralph judges from the risk level.
+ * Who decides the workflow mode.
+ *
+ * An explicit human choice is now the ONLY thing that opens the plan-first
+ * gate. `assessRisk` still runs and is still recorded in the evidence
+ * ledger, but it no longer drives autonomy, because as a keyword matcher
+ * over spec prose it saturates: on the IoM CIS build every one of 14
+ * sprints graded high — "payments" 14x, "auth changes" 14x,
+ * "secrets/credentials" 13x — in an app whose whole domain is payments.
+ * A grader that returns the same answer every time is a constant, not a
+ * signal, and gating on a constant means gating on everything.
+ *
+ * Absolute risk saturates; relative risk would not. When this comes back it
+ * should judge the DIFF against the rest of the codebase ("is this change
+ * unusually risky for this project?") rather than pattern-matching the
+ * spec's vocabulary.
  */
 export function resolveAutonomy(
   explicit: AutonomyMode | undefined,
-  risk: RiskAssessment,
 ): AutonomyMode {
-  if (explicit) return explicit;
-  return risk.level === "high" ? "plan-first" : "auto";
+  return explicit ?? "auto";
 }

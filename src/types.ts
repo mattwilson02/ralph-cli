@@ -36,7 +36,24 @@ export interface EngineOptions {
   greenfield: boolean;
   maxFixAttempts: number;
   maxResumeAttempts: number;
+  /**
+   * Wall-clock backstop in minutes. NOT the sprint budget — it exists only
+   * to kill a genuinely hung process. Effort is budgeted by `maxToolCalls`
+   * because wall-clock time measures the API's mood, not the sprint's size:
+   * across one 14-sprint run throughput varied 20x (0.17 to 3.53 tool calls
+   * per minute) on flat workload, so a fixed minute budget bought a whole
+   * sprint at one hour of the day and eight tool calls at another.
+   */
   sprintTimeout: number;
+  /** Effort budget: hard cap on agent tool calls per sprint. */
+  maxToolCalls: number;
+  /**
+   * Stall detector: escalate after this many consecutive tool calls with no
+   * progress signal. This is what catches a spinning agent — fast but not
+   * advancing — which is the failure the wall clock used to catch by
+   * accident, along with every slow-but-working sprint.
+   */
+  stallWindow: number;
   models: ModelConfig;
   onVerifyFailure: VerifyFailurePolicy;
   /** Explicit human choice of workflow mode — overrides Ralph's risk judgment */
@@ -78,6 +95,11 @@ export interface FixAttemptRecord {
 
 export interface EvidenceRecord {
   sprint: number;
+  /**
+   * Which attempt at this sprint this record covers. 1 unless the sprint
+   * has been re-run; earlier passes are archived beside it.
+   */
+  pass?: number;
   goal?: string;
   specName?: string;
   specPath?: string;
@@ -89,6 +111,10 @@ export interface EvidenceRecord {
   risk?: { level: string; reasons: string[] };
   /** Post-build scope containment result */
   scope?: { declared: string[]; changed: string[]; outOfScope: string[] };
+  /** Agent tool calls consumed by this sprint — the effort meter */
+  toolCalls?: number;
+  /** Tool-call index at which a progress signal last fired */
+  lastProgressAtCall?: number;
   /** Reasons this sprint cannot ship as a normal PR */
   escalations: string[];
   outcome?: SprintOutcome;
@@ -104,14 +130,20 @@ export interface ModelConfig {
 }
 
 export const DEFAULT_MODELS: ModelConfig = {
-  specWriter: "claude-opus-4-6",
-  builder: "claude-sonnet-4-6",
-  fixAgent: "claude-sonnet-4-6",
-  auditor: "claude-opus-4-6",
+  specWriter: "claude-opus-5",
+  builder: "claude-opus-5",
+  fixAgent: "claude-sonnet-5",
+  auditor: "claude-opus-5",
 };
 
 export interface VerifyResult {
   passed: boolean;
   output: string;
   failedChecks: string[];
+  /**
+   * Failures counted per check name. The check NAME is too coarse to detect
+   * progress — "Unit Tests" stays in `failedChecks` whether 40 tests fail or
+   * 1 — so the fix loop compares these counts instead.
+   */
+  failureCounts: Record<string, number>;
 }

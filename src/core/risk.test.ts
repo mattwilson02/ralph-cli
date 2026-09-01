@@ -112,14 +112,14 @@ describe("parseDeclaredFiles", () => {
 });
 
 describe("resolveAutonomy", () => {
-  it("lets an explicit human choice override risk", () => {
-    expect(resolveAutonomy("auto", { level: "high", reasons: [] })).toBe("auto");
-    expect(resolveAutonomy("plan-first", { level: "low", reasons: [] })).toBe("plan-first");
+  it("honours an explicit human choice", () => {
+    expect(resolveAutonomy("auto")).toBe("auto");
+    expect(resolveAutonomy("plan-first")).toBe("plan-first");
   });
 
-  it("judges from risk when no explicit choice", () => {
-    expect(resolveAutonomy(undefined, { level: "high", reasons: [] })).toBe("plan-first");
-    expect(resolveAutonomy(undefined, { level: "medium", reasons: [] })).toBe("auto");
-    expect(resolveAutonomy(undefined, { level: "low", reasons: [] })).toBe("auto");
+  it("defaults to auto — risk no longer opens the gate", () => {
+    // The grader saturates on any domain-specific codebase, so gating on it
+    // gated on everything: 14 of 14 sprints graded high on the IoM CIS run.
+    expect(resolveAutonomy(undefined)).toBe("auto");
   });
 });

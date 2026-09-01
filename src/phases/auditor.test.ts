@@ -92,3 +92,45 @@ describe("tryParseAudit", () => {
     expect(tryParseAudit("no json here")).toBeNull();
   });
 });
+
+describe("tryParseAudit — responses the greedy matcher used to break on", () => {
+  const shape = { completed: ["a"], missing: [], issues: [] };
+
+  it("parses a bare JSON object", () => {
+    expect(tryParseAudit(JSON.stringify(shape))).toEqual(shape);
+  });
+
+  it("parses JSON inside a fenced block", () => {
+    const raw = "```json\n" + JSON.stringify(shape) + "\n```";
+    expect(tryParseAudit(raw)).toEqual(shape);
+  });
+
+  it("parses JSON followed by a closing remark", () => {
+    // The old /\{[\s\S]*\}/ ran to the LAST brace in the response, so any
+    // trailing brace swallowed the object and the audit was recorded as
+    // unparseable — three of six escalations on the IoM CIS run.
+    const raw = JSON.stringify(shape) + "\n\nNote: see handler() { ... } for detail.";
+    expect(tryParseAudit(raw)).toEqual(shape);
+  });
+
+  it("parses JSON preceded by prose containing braces", () => {
+    const raw = "I checked the spec (the `{id}` route too). Here it is:\n" + JSON.stringify(shape);
+    expect(tryParseAudit(raw)).toEqual(shape);
+  });
+
+  it("picks the audit object when the response contains two objects", () => {
+    const raw = '{"unrelated": true}\n' + JSON.stringify(shape);
+    expect(tryParseAudit(raw)).toEqual(shape);
+  });
+
+  it("is not confused by braces inside strings", () => {
+    const withBraces = { completed: ["route {id} done"], missing: [], issues: [] };
+    expect(tryParseAudit("prose\n" + JSON.stringify(withBraces))).toEqual(withBraces);
+  });
+
+  it("still returns null when there is no audit object", () => {
+    expect(tryParseAudit("I could not complete the audit.")).toBeNull();
+    expect(tryParseAudit('{"completed": "not an array"}')).toBeNull();
+    expect(tryParseAudit("")).toBeNull();
+  });
+});

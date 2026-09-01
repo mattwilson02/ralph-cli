@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import { runSafe } from "../util/exec.js";
+import { log } from "../util/logger.js";
 import type {
   EvidenceRecord,
   SprintOutcome,
@@ -34,15 +35,23 @@ export class EvidenceLedger {
   constructor(root: string, sprint: number) {
     this.root = root;
     const existing = loadEvidence(root, sprint);
-    this.record =
-      existing ??
-      ({
-        sprint,
-        checks: [],
-        fixAttempts: [],
-        escalations: [],
-        startedAt: new Date().toISOString(),
-      } satisfies EvidenceRecord);
+
+    // `finishedAt` marks a COMPLETED pass. Re-running the same sprint starts
+    // a new one, and the previous verdict must not be inherited: escalations
+    // are conclusions about a finished attempt, so carrying them forward
+    // means a sprint that escalated once can never ship again however clean
+    // the re-run — the engine keeps branching the next sprint off older work
+    // and the good result is stranded. Archive the old pass (it is an audit
+    // trail; it is not discarded) and begin a fresh record.
+    //
+    // A record WITHOUT `finishedAt` is a crash mid-pass. That is exactly what
+    // the on-disk ledger exists for, so it is resumed untouched.
+    if (existing?.finishedAt) {
+      const archived = archiveEvidence(root, sprint, existing);
+      this.record = freshRecord(sprint, archived + 1);
+    } else {
+      this.record = existing ?? freshRecord(sprint, 1);
+    }
   }
 
   setGoal(goal: string): void {
@@ -131,6 +140,20 @@ export class EvidenceLedger {
     reason?: string;
     at: string;
   }): void {
+    // The effort meter. Tool calls are the sprint's unit of work: unlike
+    // wall-clock minutes they do not move when the API is slow, and they
+    // correlate with what the sprint actually costs.
+    //
+    // Persisted on every call, not just at phase boundaries: the budget is
+    // what stops a runaway sprint, so a crash-resumed one that forgot how
+    // much it had already spent would start again with a full allowance.
+    this.record.toolCalls = (this.record.toolCalls ?? 0) + 1;
+    try {
+      this.save();
+    } catch {
+      // Never let audit bookkeeping break the pipeline.
+    }
+
     try {
       const dir = join(this.root, ".ralph", "evidence");
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -141,6 +164,27 @@ export class EvidenceLedger {
     } catch {
       // Audit logging must never break the pipeline
     }
+  }
+
+  /**
+   * Mark that the sprint advanced. Resets the stall window, so a slow sprint
+   * that is genuinely progressing is never killed for being slow — only a
+   * sprint that has stopped advancing is.
+   */
+  noteProgress(reason: string): void {
+    this.record.lastProgressAtCall = this.record.toolCalls ?? 0;
+    log(`  progress: ${reason} (at ${this.record.lastProgressAtCall} tool calls)`);
+    this.save();
+  }
+
+  /** Agent tool calls consumed so far — the effort spent. */
+  get toolCallCount(): number {
+    return this.record.toolCalls ?? 0;
+  }
+
+  /** Tool calls since the last progress signal — the stall measure. */
+  get callsSinceProgress(): number {
+    return (this.record.toolCalls ?? 0) - (this.record.lastProgressAtCall ?? 0);
   }
 
   /** Record a reason this sprint cannot ship as a normal PR. */
@@ -286,6 +330,12 @@ export class EvidenceLedger {
       );
     }
 
+    if ((r.pass ?? 1) > 1) {
+      parts.push(
+        `**Pass ${r.pass} of this sprint.** Earlier passes are archived at \`.ralph/evidence/sprint-${r.sprint}.pass-*.json\`; the evidence above is this pass only.`,
+      );
+    }
+
     parts.push(`Full evidence: \`.ralph/evidence/sprint-${r.sprint}.json\` (local, not committed)`);
 
     return parts.join("\n\n");
@@ -299,6 +349,43 @@ export class EvidenceLedger {
       `- To roll back: delete this branch (\`git branch -D ${this.record.branchName || "<branch>"}\`)`,
     ].join("\n");
   }
+}
+
+function freshRecord(sprint: number, pass: number): EvidenceRecord {
+  return {
+    sprint,
+    pass,
+    checks: [],
+    fixAttempts: [],
+    escalations: [],
+    toolCalls: 0,
+    lastProgressAtCall: 0,
+    startedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Move a completed pass aside as `sprint-N.pass-K.json` and return K.
+ * Nothing is deleted — the point of the ledger is that the trail survives.
+ */
+function archiveEvidence(
+  root: string,
+  sprint: number,
+  record: EvidenceRecord,
+): number {
+  const dir = join(root, ".ralph", "evidence");
+  let pass = record.pass ?? 1;
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    while (existsSync(join(dir, `sprint-${sprint}.pass-${pass}.json`))) pass++;
+    writeFileSync(
+      join(dir, `sprint-${sprint}.pass-${pass}.json`),
+      JSON.stringify({ ...record, pass }, null, 2),
+    );
+  } catch {
+    // Archiving must never break the pipeline
+  }
+  return pass;
 }
 
 function loadEvidence(root: string, sprint: number): EvidenceRecord | null {

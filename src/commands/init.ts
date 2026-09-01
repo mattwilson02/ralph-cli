@@ -51,7 +51,8 @@ export function init(dir?: string, opts?: InitOptions): void {
     log("Scaffolding governance control plane...\n");
     const result = scaffoldGovernance(ctx, root);
     for (const f of result.created) log(`  Created: ${f}`);
-    for (const f of result.skipped) log(`  Skipped (exists): ${f}`);
+    for (const f of result.updated) log(`  Updated: ${f}`);
+    for (const f of result.skipped) log(`  Skipped (yours, or already current): ${f}`);
     printGovernanceChecklist(ctx);
     return;
   }

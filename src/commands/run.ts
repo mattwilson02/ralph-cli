@@ -48,6 +48,8 @@ interface RunFlags {
   spec?: string;
   task?: string;
   maxFixAttempts?: string;
+  maxToolCalls?: string;
+  stallWindow?: string;
   sprintTimeout?: string;
   specModel?: string;
   buildModel?: string;
@@ -106,7 +108,7 @@ export async function run(flags: RunFlags): Promise<void> {
     const proceed = await ensureApprovedArchitecture(
       ctx,
       root,
-      flags.specModel || DEFAULT_MODELS.specWriter,
+      flags.specModel || config?.specModel || DEFAULT_MODELS.specWriter,
     );
     if (!proceed) return;
     log("Greenfield project — sprint 1 will scaffold against the approved ARCHITECTURE.md.");
@@ -144,16 +146,22 @@ export async function run(flags: RunFlags): Promise<void> {
     greenfield,
     maxFixAttempts: parseInt(flags.maxFixAttempts || "3", 10),
     maxResumeAttempts: 3,
-    sprintTimeout: parseInt(flags.sprintTimeout || "45", 10),
+    maxToolCalls: parseInt(flags.maxToolCalls || "400", 10),
+    stallWindow: parseInt(flags.stallWindow || "40", 10),
+    // Backstop only. The sprint is budgeted in tool calls, not minutes —
+    // 45 was calibrated on a v0.2 pipeline and a faster API, and it killed
+    // four otherwise-healthy sprints on the IoM CIS run.
+    sprintTimeout: parseInt(flags.sprintTimeout || "360", 10),
     onVerifyFailure: config?.onVerifyFailure || "draft-pr",
     autonomy,
     approve: flags.approve ?? false,
     goal: inheritedGoal,
+    // Model priority: CLI flag > .ralph.yaml > built-in default
     models: {
-      specWriter: flags.specModel || DEFAULT_MODELS.specWriter,
-      builder: flags.buildModel || DEFAULT_MODELS.builder,
-      fixAgent: flags.fixModel || DEFAULT_MODELS.fixAgent,
-      auditor: flags.auditModel || DEFAULT_MODELS.auditor,
+      specWriter: flags.specModel || config?.specModel || DEFAULT_MODELS.specWriter,
+      builder: flags.buildModel || config?.buildModel || DEFAULT_MODELS.builder,
+      fixAgent: flags.fixModel || config?.fixModel || DEFAULT_MODELS.fixAgent,
+      auditor: flags.auditModel || config?.auditModel || DEFAULT_MODELS.auditor,
     },
   };
 

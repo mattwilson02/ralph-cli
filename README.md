@@ -161,10 +161,10 @@ Ralph saves state before each phase transition to `.ralph-state.json`. If it cra
 
 | Phase | Default Model | Role |
 |-------|--------------|------|
-| Spec Writer | `claude-opus-4-6` | Strategic planning, sprint scoping |
-| Builder | `claude-sonnet-4-6` | Code generation, pattern matching |
-| Fix Agent | `claude-sonnet-4-6` | Debugging, targeted fixes |
-| Auditor | `claude-opus-4-6` | Spec compliance verification |
+| Spec Writer | `claude-opus-5` | Strategic planning, sprint scoping |
+| Builder | `claude-opus-5` | Code generation, pattern matching |
+| Fix Agent | `claude-sonnet-5` | Debugging, targeted fixes |
+| Auditor | `claude-opus-5` | Spec compliance verification |
 
 All models are overridable via CLI flags.
 
@@ -235,11 +235,21 @@ Start autonomous sprint execution. Adapts behavior based on project state.
 | `-t, --task <desc>` | - | Directed task (skips spec writer, builds from description) |
 | `--spec <path>` | auto-detected | Path to product spec |
 | `--max-fix-attempts <n>` | `3` | Max fix attempts per verify cycle |
-| `--sprint-timeout <min>` | `45` | Max time per sprint in minutes |
-| `--spec-model <model>` | `claude-opus-4-6` | Model for spec writer |
-| `--build-model <model>` | `claude-sonnet-4-6` | Model for builders |
-| `--fix-model <model>` | `claude-sonnet-4-6` | Model for fix agents |
-| `--audit-model <model>` | `claude-opus-4-6` | Model for auditor |
+| `--max-tool-calls <n>` | `400` | Effort budget: max agent tool calls per sprint |
+| `--stall-window <n>` | `40` | Escalate after this many tool calls with no progress |
+| `--sprint-timeout <min>` | `360` | Wall-clock backstop for a hung sprint |
+| `--spec-model <model>` | `claude-opus-5` | Model for spec writer |
+| `--build-model <model>` | `claude-opus-5` | Model for builders |
+| `--fix-model <model>` | `claude-sonnet-5` | Model for fix agents |
+| `--audit-model <model>` | `claude-opus-5` | Model for auditor |
+
+**A sprint is budgeted in effort, not minutes.** Wall-clock time measures the
+API's mood rather than the sprint's size — across one 14-sprint run throughput
+varied 20x (0.17 to 3.53 tool calls per minute) on flat workload, so a fixed
+minute budget bought a whole sprint at one hour of the day and eight tool calls
+at another. `--max-tool-calls` caps what a sprint may spend, `--stall-window`
+catches an agent that is active but not advancing, and `--sprint-timeout` is
+only there to kill a hung process.
 
 ### `ralph watch [dir]`
 

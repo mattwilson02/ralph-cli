@@ -105,3 +105,131 @@ describe("EvidenceLedger", () => {
     expect(ledger.data.fixAttempts[0].failedChecks).toEqual(["Lint"]);
   });
 });
+
+describe("re-running a sprint", () => {
+  it("does not inherit a completed pass's escalations", () => {
+    const first = new EvidenceLedger(root, 9);
+    first.escalate("Spec audit output could not be parsed");
+    first.escalate("Sprint timed out after 48.7 min");
+    first.setOutcome("escalated");
+
+    // Same sprint run again — e.g. after the cause was fixed
+    const second = new EvidenceLedger(root, 9);
+
+    expect(second.hasEscalations).toBe(false);
+    expect(second.escalations).toEqual([]);
+    expect(second.data.outcome).toBeUndefined();
+    expect(second.data.pass).toBe(2);
+  });
+
+  it("archives the completed pass rather than discarding it", () => {
+    const first = new EvidenceLedger(root, 9);
+    first.escalate("timed out");
+    first.setOutcome("escalated");
+
+    new EvidenceLedger(root, 9);
+
+    const archived = join(root, ".ralph", "evidence", "sprint-9.pass-1.json");
+    expect(existsSync(archived)).toBe(true);
+    const record = JSON.parse(readFileSync(archived, "utf-8"));
+    expect(record.escalations).toEqual(["timed out"]);
+    expect(record.outcome).toBe("escalated");
+  });
+
+  it("keeps numbering passes upward across repeated re-runs", () => {
+    for (let i = 0; i < 3; i++) {
+      const ledger = new EvidenceLedger(root, 4);
+      ledger.escalate(`attempt ${i + 1} failed`);
+      ledger.setOutcome("escalated");
+    }
+
+    const fourth = new EvidenceLedger(root, 4);
+    expect(fourth.data.pass).toBe(4);
+    for (const n of [1, 2, 3]) {
+      expect(
+        existsSync(join(root, ".ralph", "evidence", `sprint-4.pass-${n}.json`)),
+      ).toBe(true);
+    }
+  });
+
+  it("resumes an unfinished pass untouched — that is what crash recovery needs", () => {
+    const crashed = new EvidenceLedger(root, 5);
+    crashed.escalate("scope violation");
+    crashed.recordCheck(0, "Build", "npm run build", false, "boom");
+    // no setOutcome — the process died mid-sprint
+
+    const resumed = new EvidenceLedger(root, 5);
+
+    expect(resumed.escalations).toEqual(["scope violation"]);
+    expect(resumed.data.checks).toHaveLength(1);
+    expect(resumed.data.pass).toBe(1);
+    expect(
+      existsSync(join(root, ".ralph", "evidence", "sprint-5.pass-1.json")),
+    ).toBe(false);
+  });
+
+  it("notes the pass number in the PR body only when it is a re-run", () => {
+    const first = new EvidenceLedger(root, 7);
+    expect(first.renderMarkdown()).not.toContain("Pass 2 of this sprint");
+    first.setOutcome("shipped");
+
+    const second = new EvidenceLedger(root, 7);
+    expect(second.renderMarkdown()).toContain("**Pass 2 of this sprint.**");
+  });
+});
+
+describe("EvidenceLedger — the effort meter", () => {
+  const use = (ledger: EvidenceLedger, n: number) => {
+    for (let i = 0; i < n; i++) {
+      ledger.recordToolUse({
+        role: "builder",
+        tool: "Edit",
+        detail: `edit ${i}`,
+        denied: false,
+        at: new Date(0).toISOString(),
+      });
+    }
+  };
+
+  it("counts tool calls as the unit of effort", () => {
+    const ledger = new EvidenceLedger(root, 1);
+    expect(ledger.toolCallCount).toBe(0);
+    use(ledger, 5);
+    expect(ledger.toolCallCount).toBe(5);
+  });
+
+  it("measures the stall window from the last progress signal", () => {
+    const ledger = new EvidenceLedger(root, 2);
+    use(ledger, 10);
+    expect(ledger.callsSinceProgress).toBe(10);
+
+    ledger.noteProgress("build phase complete");
+    expect(ledger.callsSinceProgress).toBe(0);
+
+    use(ledger, 3);
+    expect(ledger.callsSinceProgress).toBe(3);
+  });
+
+  it("does not let a slow but advancing sprint look stalled", () => {
+    // The whole point: effort and progress are independent of wall clock,
+    // which varied 20x across one run for reasons outside the sprint.
+    const ledger = new EvidenceLedger(root, 3);
+    for (let i = 0; i < 6; i++) {
+      use(ledger, 20);
+      ledger.noteProgress(`iteration ${i}`);
+      expect(ledger.callsSinceProgress).toBe(0);
+    }
+    expect(ledger.toolCallCount).toBe(120);
+  });
+
+  it("persists the counters so a crash-resumed sprint keeps its budget", () => {
+    const first = new EvidenceLedger(root, 4);
+    use(first, 7);
+    first.noteProgress("spec written");
+    use(first, 2);
+
+    const resumed = new EvidenceLedger(root, 4);
+    expect(resumed.toolCallCount).toBe(9);
+    expect(resumed.callsSinceProgress).toBe(2);
+  });
+});
