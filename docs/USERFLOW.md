@@ -7,11 +7,18 @@ Every path through the CLI, from first install to shipping PRs.
 ## 1. First-Time Setup
 
 ```
-npm install -g ralph-cli
+npm install -g ralph-agent@next
 claude login                    # authenticate with Claude subscription
 ```
 
 That's it. No config files, no API keys (unless you prefer `ANTHROPIC_API_KEY`).
+
+To put the repo-side control plane in place as well, see
+[Governance](../README.md#governance):
+
+```
+ralph init --governance
+```
 
 ---
 
