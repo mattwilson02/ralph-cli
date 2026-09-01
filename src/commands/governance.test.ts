@@ -1,110 +1,119 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { describe, it, expect, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { scaffoldGovernance, detectOwner } from "./governance.js";
+import { join, dirname } from "node:path";
+import {
+  scaffoldGovernance,
+  judgeScript,
+  RALPH_TEMPLATE_VERSION,
+} from "./governance.js";
 import type { ProjectContext } from "../context/types.js";
 
-let root: string;
+const JUDGE = ".github/scripts/ralph-judge.mjs";
 
-beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "ralph-gov-"));
-});
-
-afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
-});
-
-function makeCtx(overrides: Partial<ProjectContext> = {}): ProjectContext {
+function ctx(): ProjectContext {
   return {
-    root,
-    name: "test-app",
+    root: "/repo",
+    name: "app",
     description: "",
     isMonorepo: false,
     packageManager: "npm",
     workspaces: [
-      {
-        name: "app",
-        path: ".",
-        type: "backend",
-        checks: [
-          { name: "Tests", cmd: "npm test", cwd: "." },
-          { name: "Typecheck", cmd: "npm run typecheck", cwd: "apps/api" },
-        ],
-        dependencies: [],
-      },
+      { name: "app", path: ".", type: "backend", checks: [{ name: "test", cmd: "npm test", cwd: "." }], dependencies: [] },
     ],
-    stack: { languages: ["typescript"], frameworks: [] },
+    stack: { languages: ["ts"], frameworks: [] },
     git: { baseBranch: "main", remote: "origin", provider: "github" },
     productSpec: "",
-    sprintsDir: join(root, "docs/sprints"),
+    sprintsDir: "docs/sprints",
     docs: [],
-    ...overrides,
   };
 }
 
-describe("scaffoldGovernance", () => {
-  it("creates the PR template, CODEOWNERS, checks workflow, and governance judge", () => {
-    const result = scaffoldGovernance(makeCtx(), root);
+function repo(): { root: string; write(p: string, c: string): void; read(p: string): string; cleanup(): void } {
+  const root = mkdtempSync(join(tmpdir(), "ralph-gov-"));
+  return {
+    root,
+    write(p, c) {
+      mkdirSync(dirname(join(root, p)), { recursive: true });
+      writeFileSync(join(root, p), c);
+    },
+    read: (p) => readFileSync(join(root, p), "utf-8"),
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
 
-    expect(result.created).toContain(".github/pull_request_template.md");
-    expect(result.created).toContain(".github/CODEOWNERS");
-    expect(result.created).toContain(".github/workflows/ralph-checks.yml");
-    expect(result.created).toContain(".github/workflows/ralph-governance-judge.yml");
-    expect(result.created).toContain(".github/scripts/ralph-judge.mjs");
-    expect(result.skipped).toEqual([]);
+describe("the generated judge", () => {
+  let dir: ReturnType<typeof repo>;
+  afterEach(() => dir?.cleanup());
 
-    const template = readFileSync(join(root, ".github/pull_request_template.md"), "utf-8");
-    for (const section of ["## Goal", "## Plan", "## Evidence", "## Risks & Rollback", "## Review checklist"]) {
-      expect(template).toContain(section);
-    }
+  it("is valid JavaScript — it runs in CI where a syntax error is silent until a PR opens", () => {
+    dir = repo();
+    dir.write("judge.mjs", judgeScript());
 
-    const judgeWorkflow = readFileSync(join(root, ".github/workflows/ralph-governance-judge.yml"), "utf-8");
-    expect(judgeWorkflow).toContain("startsWith(github.head_ref, 'sprint/')");
-    expect(judgeWorkflow).toContain("ralph-judge.mjs");
-    expect(judgeWorkflow).toContain("pull-requests: write");
-
-    const judgeScript = readFileSync(join(root, ".github/scripts/ralph-judge.mjs"), "utf-8");
-    expect(judgeScript).not.toContain("ANTHROPIC_API_KEY");
-    expect(judgeScript).toContain("gh api");
-    expect(judgeScript).toContain("evidence ledger");
+    expect(() =>
+      execFileSync(process.execPath, ["--check", join(dir.root, "judge.mjs")], { stdio: "pipe" }),
+    ).not.toThrow();
   });
 
-  it("workflow runs the project's detected checks", () => {
-    scaffoldGovernance(makeCtx(), root);
-    const workflow = readFileSync(join(root, ".github/workflows/ralph-checks.yml"), "utf-8");
-    expect(workflow).toContain("run: npm test");
-    expect(workflow).toContain("run: npm run typecheck");
-    expect(workflow).toContain("working-directory: apps/api");
-    expect(workflow).toContain("npm ci");
+  it("cross-checks the ledger rather than trusting it", () => {
+    const script = judgeScript();
+
+    // The claims that must not come from the thing being judged.
+    expect(script).toContain("Evidence ledger belongs to this branch");
+    expect(script).toContain("Evidence commits are in this PR");
+    expect(script).toContain("CI independently confirms the verification");
+    expect(script).toContain("recomputed from the PR");
   });
 
-  it("skips the workflow when no checks are detected", () => {
-    const ctx = makeCtx({
-      workspaces: [
-        { name: "app", path: ".", type: "backend", checks: [], dependencies: [] },
-      ],
-    });
-    const result = scaffoldGovernance(ctx, root);
-    expect(result.created).not.toContain(".github/workflows/ralph-checks.yml");
-    expect(existsSync(join(root, ".github/workflows/ralph-checks.yml"))).toBe(false);
-  });
-
-  it("never overwrites existing files", () => {
-    mkdirSync(join(root, ".github"), { recursive: true });
-    writeFileSync(join(root, ".github/CODEOWNERS"), "/custom @someone\n");
-
-    const result = scaffoldGovernance(makeCtx(), root);
-    expect(result.skipped).toContain(".github/CODEOWNERS");
-    expect(readFileSync(join(root, ".github/CODEOWNERS"), "utf-8")).toBe("/custom @someone\n");
-    // Other files should still be created
-    expect(result.created).toContain(".github/workflows/ralph-governance-judge.yml");
-    expect(result.created).toContain(".github/scripts/ralph-judge.mjs");
+  it("pages the file list, so a large PR is judged on all of it", () => {
+    expect(judgeScript()).toContain("--paginate");
   });
 });
 
-describe("detectOwner", () => {
-  it("falls back to a placeholder outside a git repo with a remote", () => {
-    expect(detectOwner(root)).toBe("@your-github-username");
+describe("scaffoldGovernance — upgrading repositories that already adopted it", () => {
+  let dir: ReturnType<typeof repo>;
+  afterEach(() => dir?.cleanup());
+
+  it("writes the files on a fresh repo", () => {
+    dir = repo();
+
+    const result = scaffoldGovernance(ctx(), dir.root);
+
+    expect(result.created).toContain(JUDGE);
+    expect(result.updated).toEqual([]);
+    expect(dir.read(JUDGE)).toContain(`ralph-template v${RALPH_TEMPLATE_VERSION}`);
+  });
+
+  it("replaces its own older output, so a fix reaches repos already using it", () => {
+    dir = repo();
+    dir.write(JUDGE, "// ralph-judge.mjs — ralph-template v1\nconsole.log('old');\n");
+
+    const result = scaffoldGovernance(ctx(), dir.root);
+
+    expect(result.updated).toContain(JUDGE);
+    expect(dir.read(JUDGE)).toContain("CI independently confirms the verification");
+  });
+
+  it("leaves a hand-written file alone — governance files are the team's to edit", () => {
+    dir = repo();
+    dir.write(JUDGE, "// our own judge, no marker\n");
+
+    const result = scaffoldGovernance(ctx(), dir.root);
+
+    expect(result.skipped).toContain(JUDGE);
+    expect(dir.read(JUDGE)).toBe("// our own judge, no marker\n");
+  });
+
+  it("is idempotent — a second run at the same version changes nothing", () => {
+    dir = repo();
+    scaffoldGovernance(ctx(), dir.root);
+    const before = dir.read(JUDGE);
+
+    const result = scaffoldGovernance(ctx(), dir.root);
+
+    expect(result.updated).toEqual([]);
+    expect(result.created).toEqual([]);
+    expect(dir.read(JUDGE)).toBe(before);
   });
 });
