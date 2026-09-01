@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { ProjectContext } from "../context/types.js";
+import { scanProject } from "../context/scanner.js";
 import type { EngineOptions, SprintOutcome } from "../types.js";
 import { loadState, saveState, clearState } from "./state.js";
 import { EvidenceLedger } from "./evidence.js";
@@ -27,9 +28,12 @@ import { cleanupStaleSessions } from "./agent.js";
 import { log, initLogger } from "../util/logger.js";
 
 export async function runEngine(
-  ctx: ProjectContext,
+  initialCtx: ProjectContext,
   opts: EngineOptions,
 ): Promise<void> {
+  // Reassigned once per sprint — see `rescanProject`. A project that acquires
+  // a test script in sprint 1 must be verified with it in sprint 2.
+  let ctx = initialCtx;
   initLogger(ctx.root);
   cleanupStaleSessions(ctx.root);
   log("═".repeat(60));
@@ -40,7 +44,9 @@ export async function runEngine(
   if (opts.task) log(`  Task: ${opts.task}`);
   if (opts.greenfield) log(`  Mode: greenfield`);
   if (opts.improve) log(`  Mode: improve`);
-  log(`  Sprint timeout: ${opts.sprintTimeout} min`);
+  log(`  Effort budget: ${opts.maxToolCalls} tool calls`);
+  log(`  Stall window: ${opts.stallWindow} tool calls without progress`);
+  log(`  Wall-clock backstop: ${opts.sprintTimeout} min`);
   log(`  Models: spec=${opts.models.specWriter} build=${opts.models.builder}`);
   log(`          fix=${opts.models.fixAgent} audit=${opts.models.auditor}`);
   log("═".repeat(60));
@@ -63,6 +69,9 @@ export async function runEngine(
     log("═".repeat(60));
     log(`  SPRINT ${sprint}`);
     log("═".repeat(60));
+
+    // Re-read the project before anything in this sprint depends on it.
+    if (sprint > opts.startSprint) ctx = rescanProject(ctx);
 
     // Check for saved state (resume from crash)
     let state = loadState(ctx.root);
@@ -102,12 +111,29 @@ export async function runEngine(
     }
 
     const timeoutMs = opts.sprintTimeout * 60 * 1000;
-    const isTimedOut = () => Date.now() - startTime > timeoutMs;
 
     // Audit trail for this sprint — persisted to .ralph/evidence/ so it
     // survives crash recovery alongside the phase state.
     const ledger = new EvidenceLedger(ctx.root, sprint);
     ledger.setGoal(deriveGoal(ctx, opts));
+
+    // Why the sprint stops, in priority order. Effort and stall are the real
+    // guards; the clock is only a backstop for a hung process. A sprint that
+    // is slow but advancing hits none of them.
+    const stopReason = (): string | null => {
+      if (ledger.toolCallCount >= opts.maxToolCalls) {
+        return `Effort budget exhausted after ${ledger.toolCallCount} tool calls (limit ${opts.maxToolCalls}) — later phases were skipped and the work is unverified`;
+      }
+      if (ledger.callsSinceProgress >= opts.stallWindow) {
+        return `Stalled: ${ledger.callsSinceProgress} tool calls with no progress (limit ${opts.stallWindow}) — the run was active but not advancing`;
+      }
+      if (Date.now() - startTime > timeoutMs) {
+        const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+        return `Wall-clock backstop hit after ${elapsed} min — the process looks hung, not merely slow`;
+      }
+      return null;
+    };
+    const shouldStop = () => stopReason() !== null;
 
     try {
       // ── Phase: Spec ──
@@ -144,18 +170,18 @@ export async function runEngine(
         const gatesApproved = state?.approved === true || opts.approve === true;
         const specContent = readFileSync(specPath, "utf-8");
 
+        // Risk is still assessed and still recorded — it is useful evidence
+        // on the PR. It no longer opens a gate: see `resolveAutonomy`.
         const risk = assessRisk(ctx, specContent, { greenfield: opts.greenfield });
         ledger.recordRisk(risk);
-        log(`Risk assessment: ${risk.level.toUpperCase()}`);
+        log(`Risk assessment: ${risk.level.toUpperCase()} (recorded, not gating)`);
         for (const reason of risk.reasons) log(`  - ${reason}`);
 
         if (!gatesApproved) {
-          // Plan-first gate: explicit human choice overrides Ralph's
-          // risk-based judgment; high risk means the plan is approved
-          // before any code is generated.
-          const mode = resolveAutonomy(opts.autonomy, risk);
+          // Plan-first gate: opened only by an explicit --autonomy choice.
+          const mode = resolveAutonomy(opts.autonomy);
           if (mode === "plan-first") {
-            log(`Workflow: plan-first (${opts.autonomy ? "set by --autonomy" : "Ralph's judgment from risk level"})`);
+            log(`Workflow: plan-first (set by --autonomy)`);
             const approved = await gateForHuman(ctx.root, "plan", {
               sprint,
               specName,
@@ -186,7 +212,9 @@ export async function runEngine(
         }
 
         log(`Entering build phase (specPath: ${specPath})`);
+        ledger.noteProgress("spec written");
         await runBuilders(ctx, specPath, opts.models.builder, ledger, sprint);
+        ledger.noteProgress("build phase complete");
 
         // Scope containment: tests passing does not excuse out-of-scope
         // changes — containment violations escalate regardless.
@@ -208,7 +236,7 @@ export async function runEngine(
       }
 
       // ── Phase: Build Verify (with fix loop) ──
-      if (shouldRun(startPhase, "build_verify") && !isTimedOut()) {
+      if (shouldRun(startPhase, "build_verify") && !shouldStop()) {
         const hasBackend = ctx.workspaces.some(
           (w) => w.type === "backend" || w.type === "shared",
         );
@@ -238,7 +266,7 @@ export async function runEngine(
       }
 
       // ── Phase: Full Verify ──
-      if (shouldRun(startPhase, "full_verify") && !isTimedOut()) {
+      if (shouldRun(startPhase, "full_verify") && !shouldStop()) {
         const result = await verifyAndFix(
           ctx,
           "full",
@@ -267,12 +295,13 @@ export async function runEngine(
       }
 
       // ── Phase: Audit ──
-      if (shouldRun(startPhase, "audit") && !isTimedOut()) {
+      if (shouldRun(startPhase, "audit") && !shouldStop()) {
         // Handoff: the auditor judges the builder's reported deviations,
         // not just the spec checklist
         const buildReport = readBuildReports(ctx.root, sprint);
         const audit = await auditSpec(ctx, specPath, opts.models.auditor, buildReport);
         ledger.recordAudit(audit);
+        ledger.noteProgress("audit complete");
 
         // Unknown is not the same as passed
         if (audit.issues.includes(AUDIT_PARSE_FAILURE)) {
@@ -309,12 +338,11 @@ export async function runEngine(
         });
       }
 
-      if (isTimedOut()) {
-        const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-        log(`\nSprint timeout after ${elapsed} min — escalating with current state`);
-        ledger.escalate(
-          `Sprint timed out after ${elapsed} min — later phases were skipped and the work is unverified`,
-        );
+      const stopped = stopReason();
+      if (stopped) {
+        log(`\nSprint stopping early — escalating with current state`);
+        log(`  ${stopped}`);
+        ledger.escalate(stopped);
       }
 
       // ── Phase: PR ──
@@ -448,6 +476,37 @@ function deriveGoal(ctx: ProjectContext, opts: EngineOptions): string {
  * Resolve the sprint outcome from accumulated escalations and the
  * configured failure policy.
  */
+/** Total verification checks across every workspace. */
+export function countChecks(ctx: ProjectContext): number {
+  return ctx.workspaces.reduce((n, w) => n + w.checks.length, 0);
+}
+
+/**
+ * Re-read the project between sprints.
+ *
+ * `scanProject` ran once, at launch, and the result was reused for the whole
+ * run. On a greenfield build that means Ralph verifies against the empty
+ * directory it started in: sprint 1 writes the package.json and the test
+ * script, and every sprint after it still believes there is nothing to run.
+ * The checks a project ACQUIRES are precisely the ones worth running.
+ *
+ * Git identity is carried over on purpose. The rescan happens while checked
+ * out on `sprint/N`, so re-detecting the base branch here would let it drift
+ * onto a sprint branch — and the base branch is what later sprints branch
+ * from and what the PR targets.
+ */
+export function rescanProject(previous: ProjectContext): ProjectContext {
+  const fresh = scanProject(previous.root);
+  const ctx: ProjectContext = { ...fresh, root: previous.root, git: previous.git };
+
+  const before = countChecks(previous);
+  const after = countChecks(ctx);
+  if (after !== before) {
+    log(`  Rescanned the project: ${after} verification check(s), was ${before}`);
+  }
+  return ctx;
+}
+
 function resolveOutcome(ledger: EvidenceLedger, opts: EngineOptions): SprintOutcome {
   if (!ledger.hasEscalations) return "shipped";
   switch (opts.onVerifyFailure) {

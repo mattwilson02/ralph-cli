@@ -75,12 +75,68 @@ export function renameBranch(root: string, newName: string): void {
   }
 }
 
+/**
+ * Ralph's own files, and how git must treat them.
+ *
+ * `ralph.log` and `.ralph-state.json` are transient run state and never belong
+ * in a repository. `.ralph/` is different: it holds the transient session data
+ * AND `.ralph/evidence/sprint-N.json`, the audit trail. The governance judge
+ * runs in CI against a fresh `actions/checkout`, so evidence that was never
+ * committed does not exist as far as the judge is concerned — six of its nine
+ * checks read that file, and all six fail on a repository that ignores it.
+ *
+ * So the directory's CONTENTS are excluded and `evidence/` is re-included.
+ * The distinction matters: a bare `.ralph/` exclusion cannot be undone by a
+ * later negation, because git never descends into an excluded directory to
+ * discover what was re-included inside it.
+ */
+const RALPH_IGNORES = [
+  "ralph.log",
+  ".ralph-state.json",
+  ".ralph/*",
+  "!.ralph/evidence/",
+];
+
+/** A bare `.ralph/` (or `.ralph`) rule — the form that hides the audit trail. */
+function isBlanketRalphRule(line: string): boolean {
+  const t = line.trim();
+  return t === ".ralph/" || t === ".ralph";
+}
+
+/**
+ * Bring a .gitignore's Ralph rules up to date, in place.
+ *
+ * Returns the new content, or null when nothing needed changing — so callers
+ * can stay quiet on the common path instead of logging every sprint.
+ */
+export function applyRalphIgnores(content: string): string | null {
+  const lines = content.split("\n");
+  let changed = false;
+
+  // Migrate repositories written by an earlier Ralph, which excluded the whole
+  // directory and so shipped a judge that could not read its own evidence.
+  const blanket = lines.findIndex(isBlanketRalphRule);
+  if (blanket !== -1) {
+    lines.splice(blanket, 1, ".ralph/*", "!.ralph/evidence/");
+    changed = true;
+  }
+
+  // Exact-line matching, not substring: `.ralph/*` contains `.ralph/`, so a
+  // substring test would report the blanket rule as already present and skip
+  // the migration above.
+  const present = new Set(lines.map((l) => l.trim()));
+  const missing = RALPH_IGNORES.filter((rule) => !present.has(rule));
+  if (missing.length > 0) {
+    const body = lines.join("\n").trimEnd();
+    return `${body}\n\n# Ralph working files\n${missing.join("\n")}\n`;
+  }
+
+  return changed ? lines.join("\n") : null;
+}
+
 export function ensureGitignore(root: string): void {
   const gitignorePath = `${root}/.gitignore`;
   const { ok } = runSafe(`test -f ${gitignorePath}`, root);
-
-  // Ralph's own working files — must never be committed
-  const ralphFiles = ["ralph.log", ".ralph-state.json", ".ralph/"];
 
   if (!ok) {
     const defaults = [
@@ -97,18 +153,17 @@ export function ensureGitignore(root: string): void {
       "venv/",
       "coverage/",
       ".nyc_output/",
-      ...ralphFiles,
+      ...RALPH_IGNORES,
     ];
     writeFileSync(gitignorePath, defaults.join("\n") + "\n");
     log("  Created .gitignore with sensible defaults");
-  } else {
-    // Existing .gitignore — ensure Ralph's files are excluded
-    const content = readFileSync(gitignorePath, "utf-8");
-    const missing = ralphFiles.filter((f) => !content.includes(f));
-    if (missing.length > 0) {
-      writeFileSync(gitignorePath, content.trimEnd() + "\n\n# Ralph working files\n" + missing.join("\n") + "\n");
-      log("  Added Ralph working files to .gitignore");
-    }
+    return;
+  }
+
+  const updated = applyRalphIgnores(readFileSync(gitignorePath, "utf-8"));
+  if (updated !== null) {
+    writeFileSync(gitignorePath, updated);
+    log("  Updated Ralph's rules in .gitignore (evidence ledger is committed)");
   }
 }
 

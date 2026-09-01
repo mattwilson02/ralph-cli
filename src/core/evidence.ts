@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import { runSafe } from "../util/exec.js";
+import { log } from "../util/logger.js";
 import type {
   EvidenceRecord,
   SprintOutcome,
@@ -139,6 +140,20 @@ export class EvidenceLedger {
     reason?: string;
     at: string;
   }): void {
+    // The effort meter. Tool calls are the sprint's unit of work: unlike
+    // wall-clock minutes they do not move when the API is slow, and they
+    // correlate with what the sprint actually costs.
+    //
+    // Persisted on every call, not just at phase boundaries: the budget is
+    // what stops a runaway sprint, so a crash-resumed one that forgot how
+    // much it had already spent would start again with a full allowance.
+    this.record.toolCalls = (this.record.toolCalls ?? 0) + 1;
+    try {
+      this.save();
+    } catch {
+      // Never let audit bookkeeping break the pipeline.
+    }
+
     try {
       const dir = join(this.root, ".ralph", "evidence");
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -149,6 +164,27 @@ export class EvidenceLedger {
     } catch {
       // Audit logging must never break the pipeline
     }
+  }
+
+  /**
+   * Mark that the sprint advanced. Resets the stall window, so a slow sprint
+   * that is genuinely progressing is never killed for being slow — only a
+   * sprint that has stopped advancing is.
+   */
+  noteProgress(reason: string): void {
+    this.record.lastProgressAtCall = this.record.toolCalls ?? 0;
+    log(`  progress: ${reason} (at ${this.record.lastProgressAtCall} tool calls)`);
+    this.save();
+  }
+
+  /** Agent tool calls consumed so far — the effort spent. */
+  get toolCallCount(): number {
+    return this.record.toolCalls ?? 0;
+  }
+
+  /** Tool calls since the last progress signal — the stall measure. */
+  get callsSinceProgress(): number {
+    return (this.record.toolCalls ?? 0) - (this.record.lastProgressAtCall ?? 0);
   }
 
   /** Record a reason this sprint cannot ship as a normal PR. */
@@ -322,6 +358,8 @@ function freshRecord(sprint: number, pass: number): EvidenceRecord {
     checks: [],
     fixAttempts: [],
     escalations: [],
+    toolCalls: 0,
+    lastProgressAtCall: 0,
     startedAt: new Date().toISOString(),
   };
 }

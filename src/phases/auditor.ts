@@ -61,24 +61,92 @@ export async function auditSpec(
   return { completed: [], missing: [], issues: [AUDIT_PARSE_FAILURE] };
 }
 
+/**
+ * Pull the audit JSON out of whatever the model actually returned.
+ *
+ * The old implementation was a single greedy `/\{[\s\S]*\}/`, which spans
+ * from the FIRST brace in the response to the LAST one. Any prose containing
+ * a brace, any second JSON object, any fenced block followed by a closing
+ * remark, and the captured text is not valid JSON — so a correct audit was
+ * recorded as `audit-parse-failure` and the sprint escalated. That accounted
+ * for three of the six escalations on the IoM CIS run (sprints 9, 12, 14).
+ *
+ * Now: try the whole response, then each fenced block, then every
+ * brace-balanced object in order. First one that parses to the right shape
+ * wins.
+ */
 export function tryParseAudit(result: string): AuditResult | null {
-  try {
-    const jsonMatch = result.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-    const parsed = JSON.parse(jsonMatch[0]) as Partial<AuditResult>;
-    if (
-      !Array.isArray(parsed.completed) ||
-      !Array.isArray(parsed.missing) ||
-      !Array.isArray(parsed.issues)
-    ) {
-      return null;
+  for (const candidate of jsonCandidates(result)) {
+    try {
+      const parsed = JSON.parse(candidate) as Partial<AuditResult>;
+      if (
+        Array.isArray(parsed.completed) &&
+        Array.isArray(parsed.missing) &&
+        Array.isArray(parsed.issues)
+      ) {
+        return {
+          completed: parsed.completed,
+          missing: parsed.missing,
+          issues: parsed.issues,
+        };
+      }
+    } catch {
+      // Try the next candidate rather than giving up on the response.
     }
-    return {
-      completed: parsed.completed,
-      missing: parsed.missing,
-      issues: parsed.issues,
-    };
-  } catch {
-    return null;
+  }
+  return null;
+}
+
+function* jsonCandidates(raw: string): Generator<string> {
+  const text = raw.trim();
+  if (text) yield text;
+
+  for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) {
+    const inner = match[1].trim();
+    if (inner) yield inner;
+  }
+
+  yield* balancedObjects(text);
+}
+
+/**
+ * Every brace-balanced `{...}` span in the text, outermost-first, ignoring
+ * braces that appear inside JSON string literals.
+ */
+function* balancedObjects(text: string): Generator<string> {
+  for (let start = 0; start < text.length; start++) {
+    if (text[start] !== "{") continue;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (ch === "{") {
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          yield text.slice(start, i + 1);
+          break;
+        }
+      }
+    }
   }
 }

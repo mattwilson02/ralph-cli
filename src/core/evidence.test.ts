@@ -177,3 +177,59 @@ describe("re-running a sprint", () => {
     expect(second.renderMarkdown()).toContain("**Pass 2 of this sprint.**");
   });
 });
+
+describe("EvidenceLedger — the effort meter", () => {
+  const use = (ledger: EvidenceLedger, n: number) => {
+    for (let i = 0; i < n; i++) {
+      ledger.recordToolUse({
+        role: "builder",
+        tool: "Edit",
+        detail: `edit ${i}`,
+        denied: false,
+        at: new Date(0).toISOString(),
+      });
+    }
+  };
+
+  it("counts tool calls as the unit of effort", () => {
+    const ledger = new EvidenceLedger(root, 1);
+    expect(ledger.toolCallCount).toBe(0);
+    use(ledger, 5);
+    expect(ledger.toolCallCount).toBe(5);
+  });
+
+  it("measures the stall window from the last progress signal", () => {
+    const ledger = new EvidenceLedger(root, 2);
+    use(ledger, 10);
+    expect(ledger.callsSinceProgress).toBe(10);
+
+    ledger.noteProgress("build phase complete");
+    expect(ledger.callsSinceProgress).toBe(0);
+
+    use(ledger, 3);
+    expect(ledger.callsSinceProgress).toBe(3);
+  });
+
+  it("does not let a slow but advancing sprint look stalled", () => {
+    // The whole point: effort and progress are independent of wall clock,
+    // which varied 20x across one run for reasons outside the sprint.
+    const ledger = new EvidenceLedger(root, 3);
+    for (let i = 0; i < 6; i++) {
+      use(ledger, 20);
+      ledger.noteProgress(`iteration ${i}`);
+      expect(ledger.callsSinceProgress).toBe(0);
+    }
+    expect(ledger.toolCallCount).toBe(120);
+  });
+
+  it("persists the counters so a crash-resumed sprint keeps its budget", () => {
+    const first = new EvidenceLedger(root, 4);
+    use(first, 7);
+    first.noteProgress("spec written");
+    use(first, 2);
+
+    const resumed = new EvidenceLedger(root, 4);
+    expect(resumed.toolCallCount).toBe(9);
+    expect(resumed.callsSinceProgress).toBe(2);
+  });
+});

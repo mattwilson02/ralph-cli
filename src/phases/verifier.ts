@@ -22,18 +22,23 @@ export function verify(
   log(`Running ${checks.length} verification checks (${scope})...`);
 
   const failedChecks: string[] = [];
+  const failureCounts: Record<string, number> = {};
   let allOutput = "";
 
   for (const check of checks) {
     const { ok, output } = runSafe(check.cmd, ctx.root + "/" + check.cwd);
     const status = ok ? "PASS" : "FAIL";
-    log(`  ${status}: ${check.name}`);
 
     ledger?.recordCheck(attempt, check.name, check.cmd, ok, ok ? undefined : output);
 
     if (!ok) {
+      const count = countFailures(output);
       failedChecks.push(check.name);
+      failureCounts[check.name] = count;
       allOutput += `\n--- ${check.name} FAILED ---\n${output}\n`;
+      log(`  ${status}: ${check.name} (${count} failing)`);
+    } else {
+      log(`  ${status}: ${check.name}`);
     }
   }
 
@@ -41,16 +46,50 @@ export function verify(
     passed: failedChecks.length === 0,
     output: allOutput,
     failedChecks,
+    failureCounts,
   };
+}
+
+/**
+ * How many things are failing inside one check.
+ *
+ * Deliberately arithmetic and not an LLM judgment: the signal needed here is
+ * already an integer sitting in the test runner's output, and a model asked
+ * to count would cost a call on every fix iteration, add latency to a loop
+ * that is already the slowest part of a sprint, and be worse at counting
+ * than a regex. Judgment gets a model; counting gets a count.
+ *
+ * Falls back to 1 when nothing parses, so an uncountable failure still reads
+ * as failing — never as progress.
+ */
+export function countFailures(output: string): number {
+  const patterns: RegExp[] = [
+    /Tests?:\s*(\d+)\s+failed/i,      // jest summary line
+    /(\d+)\s+failed/i,                // vitest "12 failed | 40 passed"
+    /Found\s+(\d+)\s+errors?/i,       // tsc
+    /(\d+)\s+problems?\b/i,           // eslint "✖ 12 problems"
+    /(\d+)\s+errors?\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = output.match(pattern);
+    if (match) {
+      const n = Number.parseInt(match[1], 10);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+
+  const markers = output.match(/^\s*(?:✕|✗|×|FAIL\b|error\b)/gim);
+  return markers && markers.length > 0 ? markers.length : 1;
 }
 
 /**
  * Run verify + fix loop with retries.
  *
- * Safe iteration policy: if a fix attempt makes no progress (the same set of
- * checks is still failing and nothing previously failing now passes), stop
- * early and escalate instead of burning the remaining attempts on identical
- * failures.
+ * Safe iteration policy: if a fix attempt makes no progress — no check
+ * recovered AND the total number of failures did not fall — stop early and
+ * escalate instead of burning the remaining attempts on identical failures.
+ * Progress is measured by volume, not by check name; see `madeProgress`.
  */
 export async function verifyAndFix(
   ctx: ProjectContext,
@@ -60,7 +99,7 @@ export async function verifyAndFix(
   maxAttempts: number,
   ledger?: EvidenceLedger,
 ): Promise<VerifyResult> {
-  let previousFailed: string[] | null = null;
+  let previous: VerifyResult | null = null;
   // Handoff between fix attempts: each agent sees what was already tried
   // (including attempts from earlier verify scopes and crash-recovered runs)
   const priorAttempts = [...(ledger?.data?.fixAttempts ?? [])];
@@ -70,17 +109,27 @@ export async function verifyAndFix(
 
     if (result.passed) {
       log(`All ${scope} checks passed`);
+      ledger?.noteProgress(`${scope} verification passed`);
       return result;
+    }
+
+    if (previous && madeProgress(previous, result)) {
+      ledger?.noteProgress(
+        `${scope} failures ${totalFailures(previous)} -> ${totalFailures(result)}`,
+      );
     }
 
     // No progress since the last attempt — the fix agent is stuck.
     // Escalate now rather than retrying the same failure.
-    if (previousFailed && !madeProgress(previousFailed, result.failedChecks)) {
+    if (previous && !madeProgress(previous, result)) {
       log(
-        `${scope} checks made no progress after fix attempt (still failing: ${result.failedChecks.join(", ")}) — escalating early`,
+        `${scope} checks made no progress after fix attempt (still failing: ${result.failedChecks.join(", ")}, ` +
+          `${totalFailures(previous)} -> ${totalFailures(result)} failures) — escalating early`,
       );
       ledger?.escalate(
-        `Fix loop stalled: ${result.failedChecks.join(", ")} failed twice in a row with no progress (stopped after ${attempt} of ${maxAttempts} fix attempts)`,
+        `Fix loop stalled: ${result.failedChecks.join(", ")} failed twice in a row with no progress — ` +
+          `${totalFailures(previous)} failing before, ${totalFailures(result)} after ` +
+          `(stopped after ${attempt} of ${maxAttempts} fix attempts)`,
       );
       return result;
     }
@@ -127,20 +176,37 @@ export async function verifyAndFix(
       failedChecks: result.failedChecks,
       summary: fixSummary.slice(0, 1000),
     });
-    previousFailed = result.failedChecks;
+    previous = result;
   }
 
   // Unreachable — the loop always returns on the final attempt
-  return { passed: false, output: "", failedChecks: [] };
+  return { passed: false, output: "", failedChecks: [], failureCounts: {} };
 }
 
 /**
- * Progress means at least one previously-failing check now passes.
- * New failures appearing alongside old ones still count as stalled
- * if nothing got fixed.
+ * Progress is either a previously-failing check now passing, OR the total
+ * volume of failures going down.
+ *
+ * The second clause is the fix. Comparing check NAMES alone made all
+ * movement inside a check invisible — 40 failing tests down to 1 still left
+ * "Unit Tests" in the failed set, scored as zero progress, and stopped the
+ * loop "after 1 of 3 fix attempts". On the IoM CIS run that is what turned
+ * one feature (expiry-watch) into three sprints.
  */
-function madeProgress(previousFailed: string[], currentFailed: string[]): boolean {
-  return previousFailed.some((check) => !currentFailed.includes(check));
+export function madeProgress(
+  previous: VerifyResult,
+  current: VerifyResult,
+): boolean {
+  const checkNowPasses = previous.failedChecks.some(
+    (check) => !current.failedChecks.includes(check),
+  );
+  if (checkNowPasses) return true;
+
+  return totalFailures(current) < totalFailures(previous);
+}
+
+function totalFailures(result: VerifyResult): number {
+  return Object.values(result.failureCounts).reduce((a, b) => a + b, 0);
 }
 
 function getChecksForScope(
